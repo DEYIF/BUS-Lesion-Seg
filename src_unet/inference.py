@@ -8,6 +8,7 @@ import segmentation_models_pytorch as smp
 from tqdm import tqdm
 from pathlib import Path
 from PIL import Image
+import torch.nn.functional as F
 
 # MONAI 组件
 from monai.transforms import (
@@ -46,7 +47,7 @@ class UnetInferencer:
         
         # 管线 A: 有 Label 的情况 (Eval Mode)
         self.transforms_with_label = Compose([
-            LoadImaged(keys=["image", "label"], image_only=False),
+            LoadImaged(keys=["image", "label"], image_only=False, reverse_indexing=False),
             EnsureChannelFirstd(keys=["image"], channel_dim=-1),
             EnsureChannelFirstd(keys=["label"], channel_dim="no_channel"),
             ScaleIntensityd(keys=["image", "label"]), 
@@ -54,58 +55,51 @@ class UnetInferencer:
             EnsureTyped(keys=["image", "label"])
         ])
         
-        # 管线 B: 无 Label 的情况 (Pure Inference Mode)
-        # self.transforms_image_only = Compose([
-        #     LoadImaged(keys=["image"], image_only=False),
-        #     EnsureChannelFirstd(keys=["image"], channel_dim=-1),
-        #     ScaleIntensityd(keys=["image"]),
-        #     Resized(keys=["image"], spatial_size=Config.IMAGE_SIZE, mode="bilinear"),
-        #     EnsureTyped(keys=["image"])
-        # ])
         self.transforms_image_only = Compose([
-            LoadImaged(keys=["image"], image_only=False),
+            LoadImaged(keys=["image"], image_only=False, reverse_indexing=False),
             
             # 1. 强制转为 (3, H, W)
-            Lambdad(keys=["image"], func=self.force_rgb_cfirst),
+            #Lambdad(keys=["image"], func=self.force_rgb_cfirst),
+            EnsureChannelFirstd(keys=["image"], channel_dim=-1),
             
             # 2. 归一化 (0-1)
             ScaleIntensityd(keys=["image"]),
             
-            # 3. Resize (会对 C, H, W 格式正确缩放)
+            # 3. Resize
             Resized(keys=["image"], spatial_size=Config.IMAGE_SIZE, mode="bilinear"),
             
             EnsureTyped(keys=["image"])
         ])
 
-    def force_rgb_cfirst(self, img):
-        """
-        将任意维度的图片 (H, W) 或 (H, W, C) 或 (C, H, W)
-        强制转换为 (3, H, W) 格式，适配模型输入。
-        """
-        # 确保是 numpy 数组
-        if isinstance(img, torch.Tensor):
-            img = img.detach().cpu().numpy()
+    # def force_rgb_cfirst(self, img):
+    #     """
+    #     将任意维度的图片 (H, W) 或 (H, W, C) 或 (C, H, W)
+    #     强制转换为 (3, H, W) 格式，适配模型输入。
+    #     """
+    #     # 确保是 numpy 数组
+    #     if isinstance(img, torch.Tensor):
+    #         img = img.detach().cpu().numpy()
             
-        # 情况 1: 纯 2D 灰度图 (H, W) -> (1, H, W)
-        if img.ndim == 2:
-            img = img[np.newaxis, ...]
+    #     # 情况 1: 纯 2D 灰度图 (H, W) -> (1, H, W)
+    #     if img.ndim == 2:
+    #         img = img[np.newaxis, ...]
             
-        # 情况 2: (H, W, C) -> (C, H, W)
-        # 判据：最后一个维度小于等于 4 (比如 1, 3, 4)，通常是 Channel
-        elif img.ndim == 3 and img.shape[-1] <= 4:
-            img = np.transpose(img, (2, 0, 1))
+    #     # 情况 2: (H, W, C) -> (C, H, W)
+    #     # 判据：最后一个维度小于等于 4 (比如 1, 3, 4)，通常是 Channel
+    #     elif img.ndim == 3 and img.shape[-1] <= 4:
+    #         img = np.transpose(img, (2, 0, 1))
             
-        # 此时 img 必定是 (C, H, W)
-        C, H, W = img.shape
+    #     # 此时 img 必定是 (C, H, W)
+    #     C, H, W = img.shape
         
-        # 修正通道数: 如果是 1 通道 (灰度)，复制为 3 通道 (RGB)
-        if C == 1:
-            img = np.repeat(img, 3, axis=0)
-        elif C > 3:
-            # 如果是 RGBA (4通道)，只取前 3 个
-            img = img[:3, ...]
+    #     # 修正通道数: 如果是 1 通道 (灰度)，复制为 3 通道 (RGB)
+    #     if C == 1:
+    #         img = np.repeat(img, 3, axis=0)
+    #     elif C > 3:
+    #         # 如果是 RGBA (4通道)，只取前 3 个
+    #         img = img[:3, ...]
             
-        return img
+    #     return img
 
     def compute_dice(self, pred, gt):
         smooth = 1e-5
@@ -144,6 +138,7 @@ class UnetInferencer:
             pred_mask = (probs > threshold).float()
 
         # 3. 数据转回 Numpy (用于可视化和计算)
+        # pred_np = pred_mask[0, 0].cpu().numpy().transpose(1, 0)
         pred_np = pred_mask[0, 0].cpu().numpy()
         img_np = img_tensor[0].cpu().numpy().transpose(1, 2, 0) # CHW -> HWC
         
