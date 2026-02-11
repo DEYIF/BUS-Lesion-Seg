@@ -53,10 +53,10 @@ def scan_video_dataset(root_dir):
 def main():
     # === ⚙️ 配置区 ===
     # 视频数据的根目录
-    VIDEO_DATA_ROOT = "/home/maia-user/yufeng/Data/WHBUS" 
+    VIDEO_DATA_ROOT = "/home/maia-user/yufeng/Data/BreastVid" 
     
     # 结果保存目录
-    OUTPUT_ROOT = "/home/maia-user/yufeng/Data/WHBUS/inference"
+    OUTPUT_ROOT = "/home/maia-user/yufeng/Data/BreastVid/masks_inference"
     
     # 模型路径
     CHECKPOINT = os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet_allSeg.pth")
@@ -90,20 +90,21 @@ def main():
             
             # 构建保存路径
             # 1. 保存 Mask (纯黑白)
-            mask_save_dir = os.path.join(OUTPUT_ROOT, category, video_name, "masks")
+            # mask_save_dir = os.path.join(OUTPUT_ROOT, category, video_name, "masks")
+            mask_save_dir = os.path.join(OUTPUT_ROOT, category, video_name)
             os.makedirs(mask_save_dir, exist_ok=True)
             
             mask_path = os.path.join(mask_save_dir, filename)
             inferencer.save_prediction_mask(res['pred'], mask_path)
             
-            # 2. (可选) 保存 Overlay 可视化图
-            # 如果不想每帧都存叠加图(太占空间)，可以注释掉下面几行
-            overlay_save_dir = os.path.join(OUTPUT_ROOT, category, video_name, "overlays")
-            os.makedirs(overlay_save_dir, exist_ok=True)
+            # # 2. (可选) 保存 Overlay 可视化图
+            # # 如果不想每帧都存叠加图(太占空间)，可以注释掉下面几行
+            # overlay_save_dir = os.path.join(OUTPUT_ROOT, category, video_name, "overlays")
+            # os.makedirs(overlay_save_dir, exist_ok=True)
             
-            # 为了配合 visualize 接口，我们构造一个结果字典
-            # 因为 visualize 里面是用 res['filename'] 来命名的，我们不需要改动它
-            inferencer.visualize(res, overlay_save_dir)
+            # # 为了配合 visualize 接口，我们构造一个结果字典
+            # # 因为 visualize 里面是用 res['filename'] 来命名的，我们不需要改动它
+            # inferencer.visualize(res, overlay_save_dir)
 
         except Exception as e:
             print(f"⚠️ 处理出错: {item['image']} | Error: {e}")

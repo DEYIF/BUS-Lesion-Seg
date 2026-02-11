@@ -48,7 +48,8 @@ class UnetInferencer:
         # 管线 A: 有 Label 的情况 (Eval Mode)
         self.transforms_with_label = Compose([
             LoadImaged(keys=["image", "label"], image_only=False, reverse_indexing=False),
-            EnsureChannelFirstd(keys=["image"], channel_dim=-1),
+            # EnsureChannelFirstd(keys=["image"], channel_dim=-1),
+            Lambdad(keys=["image"], func=self.force_rgb_cfirst),
             EnsureChannelFirstd(keys=["label"], channel_dim="no_channel"),
             ScaleIntensityd(keys=["image", "label"]), 
             Resized(keys=["image", "label"], spatial_size=Config.IMAGE_SIZE, mode=["bilinear", "nearest"]),
@@ -59,8 +60,7 @@ class UnetInferencer:
             LoadImaged(keys=["image"], image_only=False, reverse_indexing=False),
             
             # 1. 强制转为 (3, H, W)
-            #Lambdad(keys=["image"], func=self.force_rgb_cfirst),
-            EnsureChannelFirstd(keys=["image"], channel_dim=-1),
+            Lambdad(keys=["image"], func=self.force_rgb_cfirst),
             
             # 2. 归一化 (0-1)
             ScaleIntensityd(keys=["image"]),
@@ -71,35 +71,35 @@ class UnetInferencer:
             EnsureTyped(keys=["image"])
         ])
 
-    # def force_rgb_cfirst(self, img):
-    #     """
-    #     将任意维度的图片 (H, W) 或 (H, W, C) 或 (C, H, W)
-    #     强制转换为 (3, H, W) 格式，适配模型输入。
-    #     """
-    #     # 确保是 numpy 数组
-    #     if isinstance(img, torch.Tensor):
-    #         img = img.detach().cpu().numpy()
+    def force_rgb_cfirst(self, img):
+        """
+        将任意维度的图片 (H, W) 或 (H, W, C) 或 (C, H, W)
+        强制转换为 (3, H, W) 格式，适配模型输入。
+        """
+        # 确保是 numpy 数组
+        if isinstance(img, torch.Tensor):
+            img = img.detach().cpu().numpy()
             
-    #     # 情况 1: 纯 2D 灰度图 (H, W) -> (1, H, W)
-    #     if img.ndim == 2:
-    #         img = img[np.newaxis, ...]
+        # 情况 1: 纯 2D 灰度图 (H, W) -> (1, H, W)
+        if img.ndim == 2:
+            img = img[np.newaxis, ...]
             
-    #     # 情况 2: (H, W, C) -> (C, H, W)
-    #     # 判据：最后一个维度小于等于 4 (比如 1, 3, 4)，通常是 Channel
-    #     elif img.ndim == 3 and img.shape[-1] <= 4:
-    #         img = np.transpose(img, (2, 0, 1))
+        # 情况 2: (H, W, C) -> (C, H, W)
+        # 判据：最后一个维度小于等于 4 (比如 1, 3, 4)，通常是 Channel
+        elif img.ndim == 3 and img.shape[-1] <= 4:
+            img = np.transpose(img, (2, 0, 1))
             
-    #     # 此时 img 必定是 (C, H, W)
-    #     C, H, W = img.shape
+        # 此时 img 必定是 (C, H, W)
+        C, H, W = img.shape
         
-    #     # 修正通道数: 如果是 1 通道 (灰度)，复制为 3 通道 (RGB)
-    #     if C == 1:
-    #         img = np.repeat(img, 3, axis=0)
-    #     elif C > 3:
-    #         # 如果是 RGBA (4通道)，只取前 3 个
-    #         img = img[:3, ...]
+        # 修正通道数: 如果是 1 通道 (灰度)，复制为 3 通道 (RGB)
+        if C == 1:
+            img = np.repeat(img, 3, axis=0)
+        elif C > 3:
+            # 如果是 RGBA (4通道)，只取前 3 个
+            img = img[:3, ...]
             
-    #     return img
+        return img
 
     def compute_dice(self, pred, gt):
         smooth = 1e-5
@@ -114,33 +114,68 @@ class UnetInferencer:
 
     def run(self, data_item, threshold=0.5):
         """
-        核心处理函数：自动判断是否有 Label
-        data_item: {'image': path, 'label': path or None, ...}
+        核心处理函数：推理并还原回原始尺寸
         """
         has_label = data_item.get("label") is not None
         
-        # 1. 预处理
+        # 1. 预处理 (Resize 到 512x512)
         if has_label:
             data = self.transforms_with_label(data_item)
-            gt_tensor = data["label"].unsqueeze(0).to(self.device)
+            gt_tensor_512 = data["label"].unsqueeze(0).to(self.device)
         else:
-            # 如果没有 label，我们构建一个只包含 image 的字典给 transforms
             temp_item = {"image": data_item["image"]}
             data = self.transforms_image_only(temp_item)
-            gt_tensor = None
+            gt_tensor_512 = None
 
-        img_tensor = data["image"].unsqueeze(0).to(self.device)
+        img_tensor_512 = data["image"].unsqueeze(0).to(self.device)
 
-        # 2. 模型推理
+        # === ✨ 关键步骤 1: 获取原始尺寸 ===
+        # MONAI 会将原始信息存在 image_meta_dict 中
+        # 注意：spatial_shape 可能是 tensor 或 list，需要转为 tuple
+        # spatial_shape 通常是 [H, W] (因为你已经修复了读取顺序)
+        if "image_meta_dict" in data:
+            meta = data["image_meta_dict"]
+            # 兼容性处理：有时候是 'spatial_shape'，有时候是 'dim'
+            orig_size = meta.get("spatial_shape", meta.get("dim", None))
+            # 确保只取前两个维度 (H, W)
+            orig_h, orig_w = int(orig_size[1]), int(orig_size[0])
+        else:
+            # 如果万一没有 meta，就退化为当前尺寸
+            orig_h, orig_w = img_tensor_512.shape[2], img_tensor_512.shape[3]
+
+        # 2. 模型推理 (在 512x512 上进行)
         with torch.no_grad():
-            logits = self.model(img_tensor)
-            probs = torch.sigmoid(logits)
-            pred_mask = (probs > threshold).float()
+            logits = self.model(img_tensor_512)
+            probs_512 = torch.sigmoid(logits) # (1, 1, 512, 512)
 
-        # 3. 数据转回 Numpy (用于可视化和计算)
-        # pred_np = pred_mask[0, 0].cpu().numpy().transpose(1, 0)
-        pred_np = pred_mask[0, 0].cpu().numpy()
-        img_np = img_tensor[0].cpu().numpy().transpose(1, 2, 0) # CHW -> HWC
+        # === ✨ 关键步骤 2: 还原回原始尺寸 ===
+        
+        # A. 还原概率图 (使用双线性插值 bilinear，结果更平滑)
+        # 注意：必须在 threshold 之前做插值，否则边缘会有锯齿
+        probs_orig = F.interpolate(
+            probs_512, 
+            size=(orig_h, orig_w), 
+            mode="bilinear", 
+            align_corners=False
+        )
+        
+        # B. 还原输入图像 (用于可视化背景)
+        img_tensor_orig = F.interpolate(
+            img_tensor_512,
+            size=(orig_h, orig_w),
+            mode="bilinear",
+            align_corners=False
+        )
+        
+        # C. 生成最终 Mask (在原图尺寸上切阈值)
+        pred_mask_orig = (probs_orig > threshold).float()
+
+        # 3. 数据转回 Numpy
+        # 此时取出来的数据已经是原始尺寸 (H_orig, W_orig)
+        pred_np = pred_mask_orig[0, 0].cpu().numpy()
+        
+        # Image: (C, H, W) -> (H, W, C)
+        img_np = img_tensor_orig[0].cpu().numpy().transpose(1, 2, 0)
         
         result = {
             "image": img_np,
@@ -150,14 +185,30 @@ class UnetInferencer:
         }
 
         # 4. 如果有 Label，计算指标
+        # ⚠️ 注意：计算指标通常建议在“模型训练尺寸(512)”上算，或者把 GT 读进来不 Resize 直接算。
+        # 为了简单且公平，这里我们通常在 512 尺寸上算指标（反映模型能力），但在原图尺寸上保存结果（反映应用效果）。
         if has_label:
-            gt_np = gt_tensor[0, 0].cpu().numpy()
-            dice = self.compute_dice(pred_np, gt_np)
-            iou = self.compute_iou(pred_np, gt_np)
+            # 我们在 512 尺度上计算指标 (因为 gt_tensor 目前是 512 的)
+            # 如果你想在原图尺度算，需要重新加载原始 Label，会比较慢
+            pred_mask_512 = (probs_512 > threshold).float()
+            pred_np_512 = pred_mask_512[0, 0].cpu().numpy()
+            gt_np_512 = gt_tensor_512[0, 0].cpu().numpy()
+            
+            dice = self.compute_dice(pred_np_512, gt_np_512)
+            iou = self.compute_iou(pred_np_512, gt_np_512)
+            
+            # 可视化用的 GT 也需要还原回去以便对齐
+            # 这里的 Label 使用 'nearest' 插值，因为它是 0/1 标签
+            gt_tensor_orig = F.interpolate(
+                gt_tensor_512,
+                size=(orig_h, orig_w),
+                mode="nearest" 
+            )
+            gt_np_orig = gt_tensor_orig[0, 0].cpu().numpy()
             
             result.update({
-                "gt": gt_np,
-                "dice": dice,
+                "gt": gt_np_orig, # 存原始尺寸的 GT 用于可视化
+                "dice": dice,     # 存 512 尺度的指标
                 "iou": iou
             })
             
@@ -264,7 +315,7 @@ def scan_inference_files(root_dir):
 def main():
     # === 配置区 ===
     # 你的模型路径
-    CHECKPOINT = os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet_allSeg.pth")
+    CHECKPOINT = os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet_BUSC_BUID_UDIAT_BUSUC.pth")
     # 想要推理的数据根目录 (可以是训练时的 Data 目录，也可以是新的未标注数据目录)
     # 只要该目录下有 images 文件夹即可
     INFERENCE_ROOT = Config.DATA_ROOT

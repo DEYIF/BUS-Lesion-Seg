@@ -1,3 +1,13 @@
+# images
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.bmp
+*.webp
+*.npy
+
 # model checkpoints and weights
 *.ckpt
 *.pth

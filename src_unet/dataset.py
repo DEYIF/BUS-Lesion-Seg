@@ -11,6 +11,7 @@ from monai.transforms import (
 )
 from .config import Config
 from pathlib import Path
+import torch
 
 def get_file_lists(root_dir):
     """读取 image 和 label 的路径"""
@@ -79,20 +80,92 @@ def split_by_datasets(all_data, test_dataset_names=Config.EXTERNAL_TEST_DATASETS
         
     return train_files, val_files, test_pool
 
+def force_rgb_cfirst(img):
+    """
+    将任意维度的图片 (H, W) 或 (H, W, C) 或 (C, H, W)
+    强制转换为 (3, H, W) 格式，适配模型输入。
+    """
+    # 确保是 numpy 数组
+    if isinstance(img, torch.Tensor):
+        img = img.detach().cpu().numpy()
+        
+    # 情况 1: 纯 2D 灰度图 (H, W) -> (1, H, W)
+    if img.ndim == 2:
+        img = img[np.newaxis, ...]
+        
+    # 情况 2: (H, W, C) -> (C, H, W)
+    # 判据：最后一个维度小于等于 4 (比如 1, 3, 4)，通常是 Channel
+    elif img.ndim == 3 and img.shape[-1] <= 4:
+        img = np.transpose(img, (2, 0, 1))
+        
+    # 此时 img 必定是 (C, H, W)
+    C, H, W = img.shape
+    
+    # 修正通道数: 如果是 1 通道 (灰度)，复制为 3 通道 (RGB)
+    if C == 1:
+        img = np.repeat(img, 3, axis=0)
+    elif C > 3:
+        # 如果是 RGBA (4通道)，只取前 3 个
+        img = img[:3, ...]
+        
+    return img
+
+def force_label_1ch(lbl):
+    """
+    智能处理 Label：
+    1. 兼容 UCLM 这种 RGB Mask (红=恶性, 绿=良性)。
+    2. 将多通道融合为单通道二值 Mask。
+    3. 统一输出格式为 (1, H, W)。
+    """
+    if isinstance(lbl, torch.Tensor):
+        lbl = lbl.detach().cpu().numpy()
+        
+    # === 情况 A: 多通道图像 (H, W, C) 或 (C, H, W) ===
+    if lbl.ndim == 3:
+        # 判断通道在哪
+        # 如果形状是 (H, W, 3) 或 (H, W, 4) -> 常见情况
+        if lbl.shape[-1] in [3, 4]:
+            # 核心逻辑：取所有通道的最大值
+            # 这样红(255,0,0) -> 255
+            # 绿(0,255,0) -> 255
+            # 黑(0,0,0) -> 0
+            lbl = np.max(lbl, axis=-1)
+            
+        # 如果形状是 (3, H, W) 或 (4, H, W) -> 少见
+        elif lbl.shape[0] in [3, 4]:
+            lbl = np.max(lbl, axis=0)
+
+    # === 情况 B: 此时 lbl 已经是 2D (H, W) ===
+    # 把它变回 (1, H, W)
+    if lbl.ndim == 2:
+        lbl = lbl[np.newaxis, ...]
+        
+    # === 最后一步：二值化 ===
+    # 只要像素值 > 0 就视为前景 (1.0)
+    # 这能保证红色和绿色都被视为“病灶”
+    lbl = (lbl > 0).astype(np.float32)
+        
+    return lbl
+
 def get_transforms(mode="train"):
     """
     构建 MONAI Transforms
     mode: 'train' (带增强) 或 'val' (确定性)
     """
     base_transforms = [
-        LoadImaged(keys=["image", "label"], image_only=False),
-        EnsureChannelFirstd(keys=["image"], channel_dim=-1),  # RGB 图通道在最后
-        EnsureChannelFirstd(keys=["label"], channel_dim="no_channel"),
+        LoadImaged(keys=["image", "label"], image_only=False, reverse_indexing=False),
+        # EnsureChannelFirstd(keys=["image"], channel_dim=-1),  # RGB 图通道 (H, W, C) -> (C, H, W)
+        # EnsureChannelFirstd(keys=["label"], channel_dim="no_channel"), # (H, W) -> (1, H, W)
+        Lambdad(keys=["image"], func=force_rgb_cfirst),
+        Lambdad(keys=["label"], func=force_label_1ch),  # 强制 Label 为单通道二值图
         
         # 此时 Label 已经是单通道灰度图，且值为 0/255
         # 只需要简单的归一化即可
         ScaleIntensityd(keys=["image"]),       # image 0-255 -> 0-1
         ScaleIntensityd(keys=["label"]),       # label 0/255 -> 0/1
+
+        # # 强制转换为 Tensor 并丢弃可能导致维度误判的元数据，确保 Resized 视为标准 (C, H, W)
+        # EnsureTyped(keys=["image", "label"], track_meta=False),
         
         # Resize 统一尺寸
         Resized(
@@ -100,17 +173,14 @@ def get_transforms(mode="train"):
             spatial_size=Config.IMAGE_SIZE, 
             mode=["bilinear", "nearest"] 
         ),
-
-        #Rotate90d(keys=["image", "label"], k=3),
-
     ]
     
-    # if mode == "train":
-    #     augmentations = [
-    #         RandFlipd(keys=["image", "label"], prob=0.5),
-    #         RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=(0, 1)),
-    #     ]
-    #     base_transforms.extend(augmentations)
+    if mode == "train":
+        augmentations = [
+            RandFlipd(keys=["image", "label"], prob=0.5),
+            RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=(0, 1)),
+        ]
+        base_transforms.extend(augmentations)
     
     # 最后转为 Tensor
     base_transforms.append(EnsureTyped(keys=["image", "label"]))

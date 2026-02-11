@@ -5,8 +5,8 @@ import os
 class Config:
     # --- 路径设置 ---
     # 请修改为你服务器上的实际数据路径
-    DATA_ROOT = "/home/maia-user/yufeng/Data/BUS_Mix_Cls"
-    OUTPUT_DIR = "/home/maia-user/yufeng/Data/BUS_Mix_Cls/masks_inference"
+    DATA_ROOT = "/home/maia-user/yufeng/Data/BUS_Mix_Seg"
+    OUTPUT_DIR = "/home/maia-user/yufeng/Data/BUS_Mix_Seg/masks_inference"
     CHECKPOINT_DIR = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints"
     
     # --- 数据参数 ---
@@ -20,13 +20,13 @@ class Config:
     
     # --- 训练参数 ---
     EPOCHS = 50
-    VAL_INTERVAL = 10
+    VAL_INTERVAL = 5
     LEARNING_RATE = 1e-4
     SEED = 42
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- 数据集选择 ---
-    EXTERNAL_TEST_DATASETS = ["Thammasat"]  # 指定用于外部测试的数据集名称列表
+    EXTERNAL_TEST_DATASETS = ["BUSC", "BUID", "UDIAT", "BUSUC"]  # 指定用于外部测试的数据集名称列表
 
     @staticmethod
     def setup():

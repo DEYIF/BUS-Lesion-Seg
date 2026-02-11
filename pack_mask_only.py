@@ -38,7 +38,7 @@ def pack_masks_preserve_structure(source_root, output_zip_name):
 
 if __name__ == "__main__":
     # 配置
-    SOURCE_DIR = "/home/maia-user/yufeng/Data/WHBUS/inference"     # 你的结果根目录
-    ZIP_NAME = "Data/WHBUS_masks_inference.zip" # 输出文件名
+    SOURCE_DIR = "/home/maia-user/yufeng/Data/BUS_Mix_Cls/masks_inference"     # 你的结果根目录
+    ZIP_NAME = "Data/BUS_Mix_Cls_masks_inference.zip" # 输出文件名
     
     pack_masks_preserve_structure(SOURCE_DIR, ZIP_NAME)
