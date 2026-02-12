@@ -1,3 +1,0 @@
-Metric,Total_Samples,Count_gt_0.7,Ratio_gt_0.7,Mean,Median,Variance,Std_Dev,Min,Max
-Dice,3,0,0.0000,0.2299,0.2718,0.0268,0.1639,0.0492,0.3688
-IoU,3,0,0.0000,0.1362,0.1573,0.0104,0.1021,0.0252,0.2261

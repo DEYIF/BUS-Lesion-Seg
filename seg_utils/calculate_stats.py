@@ -26,12 +26,9 @@ def calculate_metrics(values, metric_name):
 def calculate_stats_from_csv(input_path, output_path):
     print(f"Reading from {input_path}")
 
-    dice_values = []
-    iou_values = []
+    # Data structure: {'Overall': {'Dice': [], 'IoU': []}, 'Dataset1': {'Dice': [], 'IoU': []}, ...}
+    grouped_data = {'Overall': {'Dice': [], 'IoU': []}}
     
-    dice_gt_07_count = 0
-    iou_gt_07_count = 0
-
     try:
         with open(input_path, mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -46,80 +43,79 @@ def calculate_stats_from_csv(input_path, output_path):
                 return
             
             has_iou = 'IoU' in headers
+            has_dataset = 'Dataset' in headers
+
             if not has_iou:
                 print(f"Warning: 'IoU' column not found in {input_path}, skipping IoU stats.")
 
             for row in reader:
                 try:
                     dice_val = float(row['Dice'])
-                    dice_values.append(dice_val)
-                    if dice_val > 0.7:
-                        dice_gt_07_count += 1
+                    dataset = row['Dataset'] if has_dataset and row['Dataset'] else "Unknown"
+                    
+                    # Initialize dataset group if new
+                    if dataset not in grouped_data:
+                        grouped_data[dataset] = {'Dice': [], 'IoU': []}
+
+                    # Append Dice
+                    grouped_data['Overall']['Dice'].append(dice_val)
+                    grouped_data[dataset]['Dice'].append(dice_val)
                     
                     if has_iou:
                         iou_val = float(row['IoU'])
-                        iou_values.append(iou_val)
-                        if iou_val > 0.7:
-                            iou_gt_07_count += 1
+                        grouped_data['Overall']['IoU'].append(iou_val)
+                        grouped_data[dataset]['IoU'].append(iou_val)
                             
                 except ValueError:
                     print(f"Skipping invalid value at row: {row}")
                     continue
 
-        total_count = len(dice_values)
-        if total_count == 0:
+        if not grouped_data['Overall']['Dice']:
             print("No valid data found.")
             return
 
-        dice_ratio = dice_gt_07_count / total_count
-        dice_stats = calculate_metrics(dice_values, "Dice")
-        
-        iou_ratio = 0.0
-        iou_stats = {}
-        if has_iou:
-            iou_ratio = iou_gt_07_count / total_count
-            iou_stats = calculate_metrics(iou_values, "IoU")
-
         print("-" * 30)
-        print(f"Total Samples: {total_count}")
-        print("-" * 30)
-        print("Done Statistics:")
-        print(f"  > 0.7 Count: {dice_gt_07_count}")
-        print(f"  > 0.7 Ratio: {dice_ratio:.4f}")
-        for k, v in dice_stats.items():
-            if k != 'Count':
-                print(f"  {k}: {v:.4f}")
-        
-        if has_iou:
-            print("-" * 30)
-            print("IoU Statistics:")
-            print(f"  > 0.7 Count: {iou_gt_07_count}")
-            print(f"  > 0.7 Ratio: {iou_ratio:.4f}")
-            for k, v in iou_stats.items():
-                if k != 'Count':
-                    print(f"  {k}: {v:.4f}")
-        print("-" * 30)
+        print("Calculating Statistics...")
 
         # Write result to output CSV
         with open(output_path, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             
             # Header
-            header = ['Metric', 'Total_Samples', 'Count_gt_0.7', 'Ratio_gt_0.7', 'Mean', 'Median', 'Variance', 'Std_Dev', 'Min', 'Max']
+            header = ['Dataset', 'Metric', 'Total_Samples', 'Count_gt_0.7', 'Ratio_gt_0.7', 'Mean', 'Median', 'Variance', 'Std_Dev', 'Min', 'Max']
             writer.writerow(header)
             
-            # Dice Row
-            dice_row = ['Dice', total_count, dice_gt_07_count, f"{dice_ratio:.4f}"]
-            dice_row.extend([f"{dice_stats[k]:.4f}" for k in ['Mean', 'Median', 'Variance', 'Std_Dev', 'Min', 'Max']])
-            writer.writerow(dice_row)
-            
-            # IoU Row
-            if has_iou:
-                iou_row = ['IoU', total_count, iou_gt_07_count, f"{iou_ratio:.4f}"]
-                iou_row.extend([f"{iou_stats[k]:.4f}" for k in ['Mean', 'Median', 'Variance', 'Std_Dev', 'Min', 'Max']])
-                writer.writerow(iou_row)
+            # Sort datasets: Overall first, then alphabetical
+            sorted_datasets = ['Overall'] + sorted([d for d in grouped_data.keys() if d != 'Overall'])
+
+            for dataset in sorted_datasets:
+                data = grouped_data[dataset]
+                total_count = len(data['Dice'])
+                
+                # Dice Stats
+                dice_values = data['Dice']
+                dice_gt_07_count = sum(1 for v in dice_values if v > 0.7)
+                dice_ratio = dice_gt_07_count / total_count if total_count > 0 else 0
+                dice_stats = calculate_metrics(dice_values, "Dice")
+                
+                dice_row = [dataset, 'Dice', total_count, dice_gt_07_count, f"{dice_ratio:.4f}"]
+                dice_row.extend([f"{dice_stats.get(k, 0):.4f}" for k in ['Mean', 'Median', 'Variance', 'Std_Dev', 'Min', 'Max']])
+                writer.writerow(dice_row)
+
+                # IoU Stats
+                if has_iou:
+                    iou_values = data['IoU']
+                    iou_gt_07_count = sum(1 for v in iou_values if v > 0.7)
+                    iou_ratio = iou_gt_07_count / total_count if total_count > 0 else 0
+                    iou_stats = calculate_metrics(iou_values, "IoU")
+
+                    iou_row = [dataset, 'IoU', total_count, iou_gt_07_count, f"{iou_ratio:.4f}"]
+                    iou_row.extend([f"{iou_stats.get(k, 0):.4f}" for k in ['Mean', 'Median', 'Variance', 'Std_Dev', 'Min', 'Max']])
+                    writer.writerow(iou_row)
         
         print(f"Statistics written to {output_path}")
+        print("-" * 30)
+
 
     except FileNotFoundError:
         print(f"File not found: {input_path}")
