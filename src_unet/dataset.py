@@ -13,8 +13,8 @@ from .config import Config
 from pathlib import Path
 import torch
 
-def get_file_lists(root_dir):
-    """读取 image 和 label 的路径"""
+def get_file_lists(root_dir, use_sam_mask=False):
+    """读取 image 和 label 的路径, 可选读取预计算的 sam_mask"""
     image_paths = sorted(glob.glob(os.path.join(root_dir, "images", "*.png")))
     label_paths = sorted(glob.glob(os.path.join(root_dir, "labels", "*.png")))
     
@@ -25,6 +25,10 @@ def get_file_lists(root_dir):
         print (len(image_paths), len(label_paths))
         raise ValueError("Image 和 Label 数量不匹配")
 
+    sam_mask_dir = os.path.join(root_dir, "sam3_masks")
+    if use_sam_mask and not os.path.exists(sam_mask_dir):
+        print("⚠️ 警告: 请求了使用 sam_mask，但未找到 sam3_masks 目录，模型可能会报错！")
+
     data_list = []
     dataset_stats = {} # 用于统计每个数据集有多少张图
 
@@ -33,12 +37,17 @@ def get_file_lists(root_dir):
         filename = os.path.basename(img_path)
         dataset_name = filename.split('_')[0] 
         
-        # 存入字典
-        data_list.append({
+        item = {
             "image": img_path, 
             "label": lbl_path, 
-            "dataset_name": dataset_name # <--- 新增的标签
-        })
+            "dataset_name": dataset_name 
+        }
+        
+        if use_sam_mask:
+            # Assumes sam mask is saved with identical filename
+            item["sam_mask"] = os.path.join(sam_mask_dir, filename)
+            
+        data_list.append(item)
         
         # 统计
         dataset_stats[dataset_name] = dataset_stats.get(dataset_name, 0) + 1
@@ -147,48 +156,57 @@ def force_label_1ch(lbl):
         
     return lbl
 
-def get_transforms(mode="train"):
+def get_transforms(mode="train", use_sam_mask=False):
     """
     构建 MONAI Transforms
     mode: 'train' (带增强) 或 'val' (确定性)
     """
+    keys = ["image", "label"]
+    if use_sam_mask:
+        keys.append("sam_mask")
+
     base_transforms = [
-        LoadImaged(keys=["image", "label"], image_only=False, reverse_indexing=False),
-        # EnsureChannelFirstd(keys=["image"], channel_dim=-1),  # RGB 图通道 (H, W, C) -> (C, H, W)
-        # EnsureChannelFirstd(keys=["label"], channel_dim="no_channel"), # (H, W) -> (1, H, W)
+        LoadImaged(keys=keys, image_only=False, reverse_indexing=False),
         Lambdad(keys=["image"], func=force_rgb_cfirst),
         Lambdad(keys=["label"], func=force_label_1ch),  # 强制 Label 为单通道二值图
+    ]
+    
+    if use_sam_mask:
+        base_transforms.append(Lambdad(keys=["sam_mask"], func=force_label_1ch))
         
-        # 此时 Label 已经是单通道灰度图，且值为 0/255
-        # 只需要简单的归一化即可
+    base_transforms.extend([
+        # 此时 Label (和 sam_mask) 已经是单通道灰度图，且值为 0/255
         ScaleIntensityd(keys=["image"]),       # image 0-255 -> 0-1
         ScaleIntensityd(keys=["label"]),       # label 0/255 -> 0/1
-
-        # # 强制转换为 Tensor 并丢弃可能导致维度误判的元数据，确保 Resized 视为标准 (C, H, W)
-        # EnsureTyped(keys=["image", "label"], track_meta=False),
+    ])
+    
+    if use_sam_mask:
+        base_transforms.append(ScaleIntensityd(keys=["sam_mask"]))
         
+    base_transforms.append(
         # Resize 统一尺寸
         Resized(
-            keys=["image", "label"], 
+            keys=keys, 
             spatial_size=Config.IMAGE_SIZE, 
-            mode=["bilinear", "nearest"] 
-        ),
-    ]
+            # image用第一根bilinear, 剩下的话如果是label/mask统通用nearest
+            mode=["bilinear"] + ["nearest"] * (len(keys)-1)
+        )
+    )
     
     if mode == "train":
         augmentations = [
-            RandFlipd(keys=["image", "label"], prob=0.5),
-            RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=(0, 1)),
+            RandFlipd(keys=keys, prob=0.5),
+            RandRotate90d(keys=keys, prob=0.5, spatial_axes=(0, 1)),
         ]
         base_transforms.extend(augmentations)
     
     # 最后转为 Tensor
-    base_transforms.append(EnsureTyped(keys=["image", "label"]))
+    base_transforms.append(EnsureTyped(keys=keys))
     
     return Compose(base_transforms)
 
-def get_dataloaders():
-    files = get_file_lists(Config.DATA_ROOT)
+def get_dataloaders(use_sam_mask=False):
+    files = get_file_lists(Config.DATA_ROOT, use_sam_mask=use_sam_mask)
     print("配对完成的文件数:", len(files))
     
     # 划分训练/验证集 (按数据集划分)
@@ -201,8 +219,8 @@ def get_dataloaders():
     
     print(f"训练集样本数: {len(train_files)}, 验证集样本数: {len(val_files)}")
     # 创建 Dataset (CacheDataset 可加速训练，如果内存不够改为 Dataset)
-    train_ds = Dataset(data=train_files, transform=get_transforms("train"))
-    val_ds = Dataset(data=val_files, transform=get_transforms("val"))
+    train_ds = Dataset(data=train_files, transform=get_transforms("train", use_sam_mask=use_sam_mask))
+    val_ds = Dataset(data=val_files, transform=get_transforms("val", use_sam_mask=use_sam_mask))
     print("数据集创建完成")
     train_loader = DataLoader(
         train_ds, batch_size=Config.BATCH_SIZE, shuffle=True, num_workers=Config.NUM_WORKERS
