@@ -72,7 +72,11 @@ class DistillInferencer:
         if load_student_weights:
             if os.path.exists(student_ckpt):
                 print(f"🔥 Loading Trained Student Weights from {student_ckpt}")
-                student_weights = torch.load(student_ckpt, map_location=self.device)
+                ckpt_data = torch.load(student_ckpt, map_location=self.device)
+                if isinstance(ckpt_data, dict) and 'model_state_dict' in ckpt_data:
+                    student_weights = ckpt_data['model_state_dict']
+                else:
+                    student_weights = ckpt_data
                 self.model.student.load_state_dict(student_weights, strict=False) # strict=False in case of partial saving
             else:
                 print(f"⚠️ Warning: Student checkpoint {student_ckpt} not found! Using base SAM3 weights.")
@@ -295,9 +299,9 @@ def scan_inference_files(root_dir):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="SAM3 Inference (Distilled or Original)")
-    parser.add_argument("--mode", type=str, default="distilled", choices=["distilled", "original"], 
-                        help="Inference mode: 'distilled' (load student weights) or 'original' (base sam3)")
+    parser = argparse.ArgumentParser(description="SAM3 Inference (Distilled, GT-Only, or Original)")
+    parser.add_argument("--mode", type=str, default="distilled", choices=["distilled", "gtonly", "original"], 
+                        help="Inference mode: 'distilled' (teacher-guided), 'gtonly' (pure GT supervision), or 'original' (base sam3)")
     parser.add_argument("--teacher_ckpt", type=str, 
                         default=Config.UNET_CKPT,
                         help="Path to Teacher U-Net checkpoint")
@@ -305,8 +309,8 @@ def main():
                         default=Config.SAM_CKPT,
                         help="Path to Base SAM3 checkpoint")
     parser.add_argument("--student_ckpt", type=str, 
-                        default="checkpoints/student_sam3_distilled.pth",
-                        help="Path to Trained Student weights (used only in distilled mode)")
+                        default=None,
+                        help="Path to Trained Student weights. If None, auto-selected based on --mode.")
     parser.add_argument("--output_root", type=str, default="inference_results_sam3", help="Root for output")
     parser.add_argument("--data_root", type=str, default=Config.DATA_ROOT, help="Root for inference data (overrides Config.DATA_ROOT)")
     
@@ -323,11 +327,18 @@ def main():
     else:
         TARGET_DATASETS = None
 
-    OUTPUT_DIR = f"{args.output_root}"
-    if args.mode == "original" and args.output_root == "inference_results_sam3":
-         OUTPUT_DIR = f"{args.output_root}_{args.mode}" # Keep backward compatibility for default output name
+    # Handle Student Checkpoint Selection
+    student_ckpt = args.student_ckpt
+    if student_ckpt is None:
+        if args.mode == "distilled":
+            student_ckpt = "checkpoints/student_sam3_distilled.pth"
+        elif args.mode == "gtonly":
+            student_ckpt = "checkpoints/student_sam3_gtonly.pth"
+
+    # Handle Output Directory
+    OUTPUT_DIR = f"{args.output_root}_{args.mode}" if args.mode != "distilled" else args.output_root
     
-    LOAD_STUDENT_WEIGHTS = (args.mode == "distilled")
+    LOAD_STUDENT_WEIGHTS = (args.mode in ["distilled", "gtonly"])
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
@@ -349,7 +360,7 @@ def main():
     inferencer = DistillInferencer(
         teacher_ckpt=args.teacher_ckpt, 
         base_sam_ckpt=args.base_sam_ckpt, 
-        student_ckpt=args.student_ckpt,
+        student_ckpt=student_ckpt,
         load_student_weights=LOAD_STUDENT_WEIGHTS
     )
     

@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
     parser.add_argument("--save_path", type=str, default="checkpoints/sandwich_unet2.pth", help="Checkpoint save path")
+    parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint")
     
     args = parser.parse_args()
     
@@ -58,9 +59,19 @@ def main():
          return
     
     best_loss = float('inf')
+    start_epoch = 0
+    
+    if args.resume and os.path.exists(args.save_path):
+        print(f"🔄 Resuming from checkpoint: {args.save_path}")
+        checkpoint = torch.load(args.save_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_loss = checkpoint.get('loss', float('inf'))
+        print(f"✅ Resumed successfully. Starting from epoch {start_epoch + 1} with best_loss {best_loss:.4f}")
     
     print(f"▶️ Starting Training for {args.epochs} epochs...")
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         
         epoch_loss = 0

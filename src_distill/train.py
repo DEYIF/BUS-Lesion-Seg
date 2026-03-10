@@ -51,14 +51,22 @@ def get_box_from_mask(mask, perturbation=0):
     return torch.stack(boxes_list) # (B, 4)
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="SAM3 Training (Distillation vs. GT-Only)")
+    parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
+    parser.add_argument("--use_distillation", action="store_true", help="If set, uses Distillation (Teacher guiding). Otherwise uses GT-Only baseline.")
+    parser.add_argument("--no_distillation", dest='use_distillation', action='store_false', help="Explicitly disable distillation (Baseline mode)")
+    parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint if it exists.")
+    parser.set_defaults(use_distillation=True) # Default is Distillation
+    
+    args = parser.parse_args()
+    
     # 1. Setup
-    # Paths from user environment
     unet_ckpt = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/best_teacher_unet_BUSC_BUID_UDIAT_BUSUC.pth"
     sam_ckpt = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/sam3.pt"
     
-    print("🚀 Initializing Distillation Model...")
-    # NOTE: DistillModel import was changed to DistillModel in model.py, check imports!
-    # In my previous edit I changed class name to DistillModel (was DistillationModel in train.py before)
+    print(f"🚀 Initializing Distillation Model... (Mode: {'Distillation' if args.use_distillation else 'GT-Only Baseline'})")
     model = DistillModel(unet_ckpt, sam_ckpt).cuda()
     
     criterion = DistillationLoss(alpha=2.0).cuda()
@@ -70,65 +78,86 @@ def main():
     )
     
     print("📂 Loading Data...")
+    from src_unet.config import Config
+    Config.BATCH_SIZE = args.batch_size
     train_loader, val_loader = get_dataloaders() 
 
+    # Handle Checkpoint Paths
+    save_name = "student_sam3_distilled.pth" if args.use_distillation else "student_sam3_gtonly.pth"
+    save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{save_name}"
+
+    # Resume Logic
+    start_epoch = 0
+    if args.resume and os.path.exists(save_path):
+        print(f"🔄 Resuming training from checkpoint: {save_path}")
+        checkpoint = torch.load(save_path, map_location='cpu')
+        
+        # Check if new format (dict) or old format (state_dict only)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.student.load_state_dict(checkpoint['model_state_dict'])
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'epoch' in checkpoint:
+                start_epoch = checkpoint['epoch'] + 1
+            print(f"✅ Resumed successfully. Starting from epoch {start_epoch + 1}")
+        else:
+            model.student.load_state_dict(checkpoint)
+            print("✅ Loaded model weights (old format detection, starting from epoch 1)")
+
     # 2. Training Loop
-    epochs = 1
-    print(f"▶️ Starting Training for {epochs} epochs...")
+    print(f"▶️ Starting Training for {args.epochs} epochs...")
     
-    for epoch in range(epochs):
-        model.train() # This enables student training layers
+    for epoch in range(start_epoch, args.epochs):
+        model.train() 
         
         epoch_loss = 0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
         
         for batch in pbar:
             images = batch['image'].cuda() # (B, 3, H, W)
             masks = batch['label'].cuda()  # (B, 1, H, W)
             
-            # --- 1. Teacher Inference (for Distillation Targets & Box Prompt) ---
-            # We need Teacher Logits for Distillation Loss
-            # We ALSO need Teacher Prediction (Mask) to generate Box Prompt if "Prompt-Free" intent.
-            # But the user said: "Use GT Box for training stability, but try Unet Box for inference".
-            # The User also suggested: "Input X -> Frozen U-Net -> P_unet. Input X -> SAM (Prompted by P_unet or GT)".
-            # "Usually use GT Box for training stability."
-            # Let's use GT Box for training today as per standard practice, 
-            # OR mix them? User said "Prompt generation (Key point): Usually GT. Advanced: use P_unet".
-            # Let's implement BOTH: Randomly switch or just use GT for now to ensure convergence.
-            
             # Generate Box Prompt from GT Mask (Training stability)
             boxes = get_box_from_mask(masks) # (B, 4)
             
-            # --- 2. Forward Pass ---
-            # model(images, boxes) returns teacher_logits, student_logits
-            # teacher_logits comes from running Teacher(images) inside model.forward
+            # Forward Pass
             t_logits, s_logits = model(images, boxes=boxes)
             
-            # --- 3. Confidence Gating for Loss ---
-            # t_logits into probabilities
-            t_probs = torch.sigmoid(t_logits)
+            # --- Loss Calculation based on Mode ---
+            if args.use_distillation:
+                # Distillation Mode: Use Teacher Confidence Gating
+                t_probs = torch.sigmoid(t_logits)
+                confidence_mask = ((t_probs > 0.9) | (t_probs < 0.1)).float()
+                loss, l_seg, l_dist = criterion(s_logits, t_logits, masks, confidence_mask)
+                postfix_dict = {"Loss": f"{loss.item():.4f}", "Seg": f"{l_seg.item():.4f}", "Dist": f"{l_dist.item():.4f}"}
+            else:
+                # GT-Only Baseline: Pure Segmentation Loss against GT
+                loss, l_seg, l_dist = criterion(s_logits, None, masks, None) # criterion handles None teacher nicely for seg_loss
+                loss = l_seg # Override total loss to ONLY be seg_loss
+                postfix_dict = {"Loss": f"{loss.item():.4f}", "Seg": f"{l_seg.item():.4f}"}
             
-            # Confidence Mask: 1 if p > 0.9 or p < 0.1
-            # "High confidence"
-            confidence_mask = ((t_probs > 0.9) | (t_probs < 0.1)).float()
-            
-            # --- 4. Loss & Backprop ---
-            loss, l_seg, l_dist = criterion(s_logits, t_logits, masks, confidence_mask)
-            
+            # Backprop
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
             epoch_loss += loss.item()
-            pbar.set_postfix({"Loss": f"{loss.item():.4f}", "Seg": f"{l_seg.item():.4f}", "Dist": f"{l_dist.item():.4f}"})
+            pbar.set_postfix(postfix_dict)
             
         print(f"Epoch {epoch+1} finished. Avg Loss: {epoch_loss/len(train_loader):.4f}")
         
-        # Validation could be added here
+        # Save Model dynamically based on mode (Saved every epoch)
+        save_name = "student_sam3_distilled.pth" if args.use_distillation else "student_sam3_gtonly.pth"
+        save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{save_name}"
         
-    # Save Model
-    torch.save(model.student.state_dict(), "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/student_sam3_distilled.pth")
-    print("💾 Model saved to /home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/student_sam3_distilled.pth")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.student.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': epoch_loss / len(train_loader)
+        }, save_path)
+        print(f"💾 Model checkpoint saved to {save_path}")
 
 if __name__ == "__main__":
     main()

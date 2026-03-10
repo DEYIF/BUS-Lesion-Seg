@@ -31,18 +31,22 @@ class DistillationLoss(nn.Module):
                 self.bce_loss(student_logits, gt_masks)
         
         # B. 蒸馏损失 (让 SAM 学得像 Teacher - 仅在 Teacher 自信区域)
-        # 这里的 teacher_logits 不需要梯度
-        with torch.no_grad():
-            t_target = teacher_logits.detach()
-            
-        if confidence_mask is not None:
-            # 只在 confidence_mask == 1 的像素上计算 MSE
-            # 展平后计算可能更方便，或者用 reduction='none' 后 masking
-            mse_map = F.mse_loss(student_logits, t_target, reduction='none')
-            # masked_mean
-            l_distill = (mse_map * confidence_mask).sum() / (confidence_mask.sum() + 1e-6)
+        if teacher_logits is not None:
+            # 这里的 teacher_logits 不需要梯度
+            with torch.no_grad():
+                t_target = teacher_logits.detach()
+                
+            if confidence_mask is not None:
+                # 只在 confidence_mask == 1 的像素上计算 MSE
+                # 展平后计算可能更方便，或者用 reduction='none' 后 masking
+                mse_map = F.mse_loss(student_logits, t_target, reduction='none')
+                # masked_mean
+                l_distill = (mse_map * confidence_mask).sum() / (confidence_mask.sum() + 1e-6)
+            else:
+                l_distill = self.distill_loss(student_logits, t_target)
         else:
-            l_distill = self.distill_loss(student_logits, t_target)
+            # Baseline Mode: No Distillation Loss
+            l_distill = torch.tensor(0.0, device=student_logits.device)
         
         # 总损失
         total_loss = l_seg + self.alpha * l_distill

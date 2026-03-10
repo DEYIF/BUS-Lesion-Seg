@@ -53,10 +53,10 @@ def scan_video_dataset(root_dir):
 def main():
     # === ⚙️ 配置区 ===
     # 视频数据的根目录
-    VIDEO_DATA_ROOT = "/home/maia-user/yufeng/Data/BreastVid" 
+    VIDEO_DATA_ROOT = "/home/maia-user/yufeng/Data/WHBUS/buvimgs-001" 
     
     # 结果保存目录
-    OUTPUT_ROOT = "/home/maia-user/yufeng/Data/BreastVid/masks_inference"
+    OUTPUT_ROOT = "/home/maia-user/yufeng/Data/WHBUS/masks_inference"
     
     # 模型路径
     CHECKPOINT = os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet_allSeg.pth")
