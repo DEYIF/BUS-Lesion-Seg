@@ -25,18 +25,13 @@ class VideoFrameDataset(Dataset):
         
     def __getitem__(self, idx):
         item = self.tasks[idx]
+        # ✅ 稳健做法：用 PIL 先读原始尺寸，不依赖 MONAI metadata
+        with Image.open(item["image"]) as pil_img:
+            orig_w, orig_h = pil_img.size  # PIL.size 返回 (W, H)
+            
         # MONAI transforms expect dictionary
         temp_item = {"image": item["image"]}
-        # Apply transforms
         data = self.transform(temp_item)
-        
-        # Extract original sizes
-        if "image_meta_dict" in data:
-            meta = data["image_meta_dict"]
-            orig_size = meta.get("spatial_shape", meta.get("dim", None))
-            orig_h, orig_w = int(orig_size[1]), int(orig_size[0])
-        else:
-            orig_h, orig_w = 0, 0 # Will handle as fallback
             
         return {
             "image": data["image"],
@@ -71,8 +66,11 @@ def save_prediction_mask(pred_np, save_path):
 def main():
     VIDEO_DATA_ROOT = "/home/maia-user/yufeng/Data/WHBUS/buvimgs-001" 
     OUTPUT_ROOT = "/home/maia-user/yufeng/Data/WHBUS/masks_inference"
-    CHECKPOINT = os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet_allSeg.pth")
-    BATCH_SIZE = Config.BATCH_SIZE * 2 # Video inference uses less memory, try larger batch size
+    # ✅ 修复：指向正确的模型文件
+    CHECKPOINT = os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet.pth")
+    BATCH_SIZE = Config.BATCH_SIZE * 2
+    # 只为这个指定的子文件夹输出 overlay，方便检查；设为 None 则全部输出
+    OVERLAY_VIDEO = "benign_9161001_10"  # 实际存在的第一个视频文件夹名
     
     if not os.path.exists(VIDEO_DATA_ROOT):
         print(f"❌ 找不到数据目录: {VIDEO_DATA_ROOT}")
@@ -138,6 +136,28 @@ def main():
             mask_path = os.path.join(mask_save_dir, fname)
             
             save_prediction_mask(pred_np, mask_path)
+
+            # 只为 OVERLAY_VIDEO 指定的子文件夹输出 overlay（None 则全部输出）
+            if OVERLAY_VIDEO is None or vid == OVERLAY_VIDEO:
+                overlay_save_dir = os.path.join(OUTPUT_ROOT, cat, vid, "overlays")
+                os.makedirs(overlay_save_dir, exist_ok=True)
+                
+                img_single = images[i:i+1]
+                img_orig = F.interpolate(
+                    img_single,
+                    size=(h, w),
+                    mode="bilinear",
+                    align_corners=False
+                )
+                img_np = img_orig[0].cpu().numpy().transpose(1, 2, 0)
+                
+                res_dict = {
+                    "filename": fname,
+                    "pred": pred_np,
+                    "image": img_np,
+                    "has_label": False
+                }
+                inferencer.visualize(res_dict, overlay_save_dir)
 
     print(f"\n✅ 视频批量推理完成！结果已保存在: {OUTPUT_ROOT}")
 

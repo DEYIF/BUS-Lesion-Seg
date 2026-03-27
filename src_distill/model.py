@@ -7,11 +7,13 @@ from sam3.model.geometry_encoders import Prompt
 import os
 import sys
 
+from peft import LoraConfig, get_peft_model
+
 # 引用你的 U-Net
 from src_unet.model import build_unet
 
 class DistillModel(nn.Module):
-    def __init__(self, unet_ckpt, sam_ckpt, sam_config=None):
+    def __init__(self, unet_ckpt, sam_ckpt, sam_config=None, use_lora=True):
         """
         sam_ckpt: path to sam3.pt
         sam_config: Ignored for SAM3 (config is implicit/default for now)
@@ -46,29 +48,59 @@ class DistillModel(nn.Module):
         self.register_buffer("pixel_mean", torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1))
         self.register_buffer("pixel_std", torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1))
 
-        # === 3. 冻结策略 (显存优化) ===
-        # SAM 的 Image Encoder 非常大，建议冻结，只训练 Mask Decoder
-        # 这样显存占用小，且不容易破坏 SAM 原有的预训练特征
-        
-        # Freezing Backbone
-        for p in self.student.backbone.parameters():
-            p.requires_grad = False
-        # Freezing Geometry Encoder (Prompt Encoder) ?? Usually yes.
-        for p in self.student.geometry_encoder.parameters():
-            p.requires_grad = False
-        # Freezing Transformer Encoder ?? Usually yes for SAM fine-tuning.
-        for p in self.student.transformer.encoder.parameters():
-            p.requires_grad = False
+        self.use_lora = use_lora
+        if use_lora:
+            # === 3. 冻结所有原生参数 ===
+            for p in self.student.parameters():
+                p.requires_grad = False
+                
+            # === 4. 引入 LoRA Adapter (针对 Mask Decoder 的 FFN) ===
+            print("🔧 Injecting PEFT LoRA Adapters into Mask Decoder FFN...")
             
-        # 仅让 Mask Decoder 可训练 (Transformer Decoder + Segmentation Head)
-        for p in self.student.transformer.decoder.parameters():
-            p.requires_grad = True
-        if self.student.segmentation_head is not None:
-             for p in self.student.segmentation_head.parameters():
-                 p.requires_grad = True
-        if self.student.dot_prod_scoring is not None:
-             for p in self.student.dot_prod_scoring.parameters():
-                 p.requires_grad = True
+            lora_config = LoraConfig(
+                r=8,
+                lora_alpha=16,
+                target_modules=["linear1", "linear2"],
+                lora_dropout=0.05,
+                bias="none"
+            )
+            
+            # 只针对解码器注入 LoRA
+            self.student.transformer.decoder = get_peft_model(
+                self.student.transformer.decoder, 
+                lora_config
+            )
+            
+            # (Optional) 解冻一些小体积的特定全连接头 (比如最终输出 Mask 的 MLP head)
+            # 这里为了保持纯粹的 Adapter 方案，我们选择连 Segmentation Head 也一起冻结，只微调 LoRA 矩阵。
+            # 如果你想微调 Head，可以把下面两行取消注释：
+            # for p in self.student.segmentation_head.parameters(): p.requires_grad = True
+            # for p in self.student.dot_prod_scoring.parameters(): p.requires_grad = True
+
+            # 打印可微调参数量
+            self.student.transformer.decoder.print_trainable_parameters()
+        else:
+            # === 3. 全局解码器微调策略 (显存优化) ===
+            print("🚀 Using Full Decoder Fine-Tuning (No LoRA)")
+            # Freezing Backbone
+            for p in self.student.backbone.parameters():
+                p.requires_grad = False
+            # Freezing Geometry Encoder (Prompt Encoder)
+            for p in self.student.geometry_encoder.parameters():
+                p.requires_grad = False
+            # Freezing Transformer Encoder
+            for p in self.student.transformer.encoder.parameters():
+                p.requires_grad = False
+                
+            # 仅让 Mask Decoder 可训练 (Transformer Decoder + Segmentation Head)
+            for p in self.student.transformer.decoder.parameters():
+                p.requires_grad = True
+            if self.student.segmentation_head is not None:
+                 for p in self.student.segmentation_head.parameters():
+                     p.requires_grad = True
+            if self.student.dot_prod_scoring is not None:
+                 for p in self.student.dot_prod_scoring.parameters():
+                     p.requires_grad = True
 
     def forward(self, images, boxes=None):
         """
@@ -101,14 +133,15 @@ class DistillModel(nn.Module):
         
         # A. Backbone
         # SAM3 backbone forward expects (B, 3, H, W)
-        backbone_out = self.student.backbone.forward_image(sam_input)
-        
-        # Manually extract features like Sam3Image._get_img_feats but simplified for BATCH
-        # We assume batch size B and we process all images.
-        # backbone_out['backbone_fpn'] is list of (B, C, H_feat, W_feat)
-        vis_feats = backbone_out["backbone_fpn"][-self.student.num_feature_levels :]
-        vis_pos_enc = backbone_out["vision_pos_enc"][-self.student.num_feature_levels :]
-        vis_feat_sizes = [x.shape[-2:] for x in vis_pos_enc]
+        with torch.no_grad():
+            backbone_out = self.student.backbone.forward_image(sam_input)
+            
+            # Manually extract features like Sam3Image._get_img_feats but simplified for BATCH
+            # We assume batch size B and we process all images.
+            # backbone_out['backbone_fpn'] is list of (B, C, H_feat, W_feat)
+            vis_feats = backbone_out["backbone_fpn"][-self.student.num_feature_levels :]
+            vis_pos_enc = backbone_out["vision_pos_enc"][-self.student.num_feature_levels :]
+            vis_feat_sizes = [x.shape[-2:] for x in vis_pos_enc]
         
         # Flatten: NxCxHxW => HWxNxC (seq-first)
         # Here N is Batch Size (B).
@@ -151,12 +184,13 @@ class DistillModel(nn.Module):
         )
         
         # Run geometry encoder
-        geo_feats, geo_masks = self.student.geometry_encoder(
-            geo_prompt=geometric_prompt,
-            img_feats=img_feats,
-            img_sizes=vis_feat_sizes,
-            img_pos_embeds=img_pos_embeds,
-        )
+        with torch.no_grad():
+            geo_feats, geo_masks = self.student.geometry_encoder(
+                geo_prompt=geometric_prompt,
+                img_feats=img_feats,
+                img_sizes=vis_feat_sizes,
+                img_pos_embeds=img_pos_embeds,
+            )
         # No Visual/Text prompts for now
         prompt = geo_feats
         prompt_mask = geo_masks
@@ -165,16 +199,17 @@ class DistillModel(nn.Module):
         # _run_encoder logic
         prompt_pos_embed = torch.zeros_like(prompt)
         
-        memory = self.student.transformer.encoder(
-            src=[x.clone() for x in img_feats], # copy list?
-            src_key_padding_mask=None,
-            src_pos=[x.clone() for x in img_pos_embeds],
-            prompt=prompt,
-            prompt_pos=prompt_pos_embed,
-            prompt_key_padding_mask=prompt_mask,
-            feat_sizes=vis_feat_sizes,
-            encoder_extra_kwargs=None,
-        )
+        with torch.no_grad():
+            memory = self.student.transformer.encoder(
+                src=[x.clone() for x in img_feats], # copy list?
+                src_key_padding_mask=None,
+                src_pos=[x.clone() for x in img_pos_embeds],
+                prompt=prompt,
+                prompt_pos=prompt_pos_embed,
+                prompt_key_padding_mask=prompt_mask,
+                feat_sizes=vis_feat_sizes,
+                encoder_extra_kwargs=None,
+            )
         
         encoder_out = {
             "encoder_hidden_states": memory["memory"],

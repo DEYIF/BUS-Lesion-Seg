@@ -57,17 +57,22 @@ def main():
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
     parser.add_argument("--use_distillation", action="store_true", help="If set, uses Distillation (Teacher guiding). Otherwise uses GT-Only baseline.")
     parser.add_argument("--no_distillation", dest='use_distillation', action='store_false', help="Explicitly disable distillation (Baseline mode)")
+    parser.add_argument("--finetune_type", type=str, default="lora", choices=["lora", "full"], help="Fine-tuning strategy: 'lora' or 'full'")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint if it exists.")
     parser.set_defaults(use_distillation=True) # Default is Distillation
     
     args = parser.parse_args()
     
     # 1. Setup
-    unet_ckpt = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/best_teacher_unet_BUSC_BUID_UDIAT_BUSUC.pth"
-    sam_ckpt = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/sam3.pt"
+    # 1. Select Mode and Initialization
+    mode_str = "GT-Only Baseline" if not args.use_distillation else "Teacher Distilled"
+    print(f"🚀 Initializing Distillation Model... (Mode: {mode_str}, Strategy: {args.finetune_type.upper()})")
     
-    print(f"🚀 Initializing Distillation Model... (Mode: {'Distillation' if args.use_distillation else 'GT-Only Baseline'})")
-    model = DistillModel(unet_ckpt, sam_ckpt).cuda()
+    teacher_ckpt = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/best_teacher_unet_BUSC_BUID_UDIAT_BUSUC.pth"
+    base_sam_ckpt = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/sam3.pt"
+    
+    use_lora = (args.finetune_type == "lora")
+    model = DistillModel(teacher_ckpt, base_sam_ckpt, use_lora=use_lora).cuda()
     
     criterion = DistillationLoss(alpha=2.0).cuda()
     
@@ -83,29 +88,36 @@ def main():
     train_loader, val_loader = get_dataloaders() 
 
     # Handle Checkpoint Paths
-    save_name = "student_sam3_distilled.pth" if args.use_distillation else "student_sam3_gtonly.pth"
+    save_name_prefix = "student_sam3_distilled" if args.use_distillation else "student_sam3_gtonly"
+    save_name = f"{save_name_prefix}_{args.finetune_type}.pth"
+    latest_save_name = f"{save_name_prefix}_{args.finetune_type}_latest.pth"
+    
     save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{save_name}"
+    latest_save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{latest_save_name}"
 
     # Resume Logic
     start_epoch = 0
-    if args.resume and os.path.exists(save_path):
-        print(f"🔄 Resuming training from checkpoint: {save_path}")
-        checkpoint = torch.load(save_path, map_location='cpu')
+    resume_path = latest_save_path if os.path.exists(latest_save_path) else save_path
+    
+    if args.resume and os.path.exists(resume_path):
+        print(f"🔄 Resuming training from checkpoint: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location='cpu')
         
         # Check if new format (dict) or old format (state_dict only)
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            model.student.load_state_dict(checkpoint['model_state_dict'])
+            model.student.load_state_dict(checkpoint['model_state_dict'], strict=False)
             if 'optimizer_state_dict' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'epoch' in checkpoint:
                 start_epoch = checkpoint['epoch'] + 1
             print(f"✅ Resumed successfully. Starting from epoch {start_epoch + 1}")
         else:
-            model.student.load_state_dict(checkpoint)
+            model.student.load_state_dict(checkpoint, strict=False)
             print("✅ Loaded model weights (old format detection, starting from epoch 1)")
 
     # 2. Training Loop
-    print(f"▶️ Starting Training for {args.epochs} epochs...")
+    print(f"▶️ Starting Training for {args.epochs} epochs... (AMP Enabled: bfloat16)")
+    scaler = torch.amp.GradScaler('cuda')
     
     for epoch in range(start_epoch, args.epochs):
         model.train() 
@@ -120,26 +132,28 @@ def main():
             # Generate Box Prompt from GT Mask (Training stability)
             boxes = get_box_from_mask(masks) # (B, 4)
             
-            # Forward Pass
-            t_logits, s_logits = model(images, boxes=boxes)
+            # Forward Pass with AMP
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                t_logits, s_logits = model(images, boxes=boxes)
+                
+                # --- Loss Calculation based on Mode ---
+                if args.use_distillation:
+                    # Distillation Mode: Use Teacher Confidence Gating
+                    t_probs = torch.sigmoid(t_logits)
+                    confidence_mask = ((t_probs > 0.9) | (t_probs < 0.1)).float()
+                    loss, l_seg, l_dist = criterion(s_logits, t_logits, masks, confidence_mask)
+                    postfix_dict = {"Loss": f"{loss.item():.4f}", "Seg": f"{l_seg.item():.4f}", "Dist": f"{l_dist.item():.4f}"}
+                else:
+                    # GT-Only Baseline: Pure Segmentation Loss against GT
+                    loss, l_seg, l_dist = criterion(s_logits, None, masks, None) # criterion handles None teacher nicely for seg_loss
+                    loss = l_seg # Override total loss to ONLY be seg_loss
+                    postfix_dict = {"Loss": f"{loss.item():.4f}", "Seg": f"{l_seg.item():.4f}"}
             
-            # --- Loss Calculation based on Mode ---
-            if args.use_distillation:
-                # Distillation Mode: Use Teacher Confidence Gating
-                t_probs = torch.sigmoid(t_logits)
-                confidence_mask = ((t_probs > 0.9) | (t_probs < 0.1)).float()
-                loss, l_seg, l_dist = criterion(s_logits, t_logits, masks, confidence_mask)
-                postfix_dict = {"Loss": f"{loss.item():.4f}", "Seg": f"{l_seg.item():.4f}", "Dist": f"{l_dist.item():.4f}"}
-            else:
-                # GT-Only Baseline: Pure Segmentation Loss against GT
-                loss, l_seg, l_dist = criterion(s_logits, None, masks, None) # criterion handles None teacher nicely for seg_loss
-                loss = l_seg # Override total loss to ONLY be seg_loss
-                postfix_dict = {"Loss": f"{loss.item():.4f}", "Seg": f"{l_seg.item():.4f}"}
-            
-            # Backprop
+            # Backprop with GradScaler
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             
             epoch_loss += loss.item()
             pbar.set_postfix(postfix_dict)
@@ -147,16 +161,32 @@ def main():
         print(f"Epoch {epoch+1} finished. Avg Loss: {epoch_loss/len(train_loader):.4f}")
         
         # Save Model dynamically based on mode (Saved every epoch)
-        save_name = "student_sam3_distilled.pth" if args.use_distillation else "student_sam3_gtonly.pth"
+        save_name_prefix = "student_sam3_distilled" if args.use_distillation else "student_sam3_gtonly"
+        save_name = f"{save_name_prefix}_{args.finetune_type}.pth"
+        latest_save_name = f"{save_name_prefix}_{args.finetune_type}_latest.pth"
+        
         save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{save_name}"
+        latest_save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{latest_save_name}"
         
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        torch.save({
+        if use_lora:
+            state_dict_to_save = {k: v.cpu() for k, v in model.student.named_parameters() if v.requires_grad}
+        else:
+            state_dict_to_save = model.student.state_dict()
+            
+        cp_dict = {
             'epoch': epoch,
-            'model_state_dict': model.student.state_dict(),
+            'model_state_dict': state_dict_to_save,
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': epoch_loss / len(train_loader)
-        }, save_path)
+        }
+        
+        # 始终保存 _latest 以用于断点续训
+        torch.save(cp_dict, latest_save_path)
+        print(f"💾 Latest Model checkpoint saved to {latest_save_path}")
+        
+        # 保存主干权重
+        torch.save(cp_dict, save_path)
         print(f"💾 Model checkpoint saved to {save_path}")
 
 if __name__ == "__main__":

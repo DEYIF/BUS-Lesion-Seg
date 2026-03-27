@@ -8,11 +8,12 @@ class Config:
     DATA_ROOT = "/home/maia-user/yufeng/Data/BUS_Mix_Seg"
     OUTPUT_DIR = "/home/maia-user/yufeng/Data/BUS_Mix_Seg/masks_inference"
     CHECKPOINT_DIR = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints"
+    RESUME_CHECKPOINT = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/latest_teacher_unet.pth" # 填入 checkpoints/latest_teacher_unet.pth 可以继续训练
     
     # --- 数据参数 ---
     IMAGE_SIZE = (512, 512)
-    BATCH_SIZE = 8  # 根据显存调整 (3090/4090 可开 16-32)
-    NUM_WORKERS = 4
+    BATCH_SIZE = 2
+    NUM_WORKERS = 2
     
     # --- 模型参数 ---
     MODEL_ARCH = "resnet34"
@@ -23,7 +24,8 @@ class Config:
     VAL_INTERVAL = 5
     LEARNING_RATE = 1e-4
     SEED = 42
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    # --- 环境配置 ---
+    DEVICE = "cuda"            # GPU 被其他进程占满爆显存，在此强制使用 CPU 训练
 
     # --- 数据集选择 ---
     EXTERNAL_TEST_DATASETS = ["BUSC", "BUID", "UDIAT", "BUSUC"]  # 指定用于外部测试的数据集名称列表

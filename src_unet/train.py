@@ -18,7 +18,7 @@ from monai.data.utils import decollate_batch
 from src_unet.config import Config
 from src_unet.dataset import get_dataloaders
 from src_unet.model import build_unet
-from src_unet.utils import set_seed, save_checkpoint
+from src_unet.utils import set_seed, save_checkpoint, load_checkpoint
 
 def main():
     # 1. 初始化配置
@@ -45,11 +45,17 @@ def main():
     ])
 
     # 记录最佳分数
-    best_metric = -1
+    best_metric = -1.0
     best_metric_epoch = -1
+    start_epoch = 0
 
+    # === 新增：断点续训加载逻辑 ===
+    if Config.RESUME_CHECKPOINT and os.path.exists(Config.RESUME_CHECKPOINT):
+        start_epoch, best_metric = load_checkpoint(Config.RESUME_CHECKPOINT, model, optimizer)
+        print(f"🔄 恢复训练从 Epoch {start_epoch+1} 开始，当前最佳 Dice: {best_metric:.4f}")
+    
     # 6. 训练循环
-    for epoch in range(Config.EPOCHS):
+    for epoch in range(start_epoch, Config.EPOCHS):
         print(f"\nEpoch {epoch+1}/{Config.EPOCHS}")
         model.train()
         train_loss = 0
@@ -111,11 +117,15 @@ def main():
                 best_metric_epoch = epoch + 1
                 save_path = os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet.pth")
                 
-                save_checkpoint(model, epoch, best_metric, save_path)
+                save_checkpoint(model, optimizer, epoch + 1, best_metric, avg_val_loss, save_path)
                 print(f"🌟 新纪录！模型已保存 (Dice: {best_metric:.4f})")
                 
         else:
             print(f"📈 训练结束 -> Train Loss: {avg_train_loss:.4f} (本轮跳过验证)")
+
+        # === 新增：每轮 epoch 结束保存最新状态 ===
+        latest_save_path = os.path.join(Config.CHECKPOINT_DIR, "latest_teacher_unet.pth")
+        save_checkpoint(model, optimizer, epoch + 1, best_metric, avg_train_loss, latest_save_path)
 
     print(f"\n🏁 训练完成！最佳 Dice: {best_metric:.4f} 在第 {best_metric_epoch} Epoch")
 

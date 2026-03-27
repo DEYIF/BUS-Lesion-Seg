@@ -59,13 +59,13 @@ def get_box_from_mask(mask, perturbation=0):
     return torch.stack(boxes_list)
 
 class DistillInferencer:
-    def __init__(self, teacher_ckpt, base_sam_ckpt, student_ckpt, device='cuda', load_student_weights=True):
+    def __init__(self, teacher_ckpt, base_sam_ckpt, student_ckpt, device='cuda', load_student_weights=True, use_lora=True):
         self.device = device
         print(f"🚀 Loading DistillModel on {self.device}...")
         
         # 1. Initialize Model Architecture
         # DistillModel initializes efficient-sam / sam3 internally
-        self.model = DistillModel(teacher_ckpt, base_sam_ckpt).to(self.device)
+        self.model = DistillModel(teacher_ckpt, base_sam_ckpt, use_lora=use_lora).to(self.device)
         
         # 2. Load Trained Student Weights
         # self.model.student is the SAM3 component
@@ -302,6 +302,7 @@ def main():
     parser = argparse.ArgumentParser(description="SAM3 Inference (Distilled, GT-Only, or Original)")
     parser.add_argument("--mode", type=str, default="distilled", choices=["distilled", "gtonly", "original"], 
                         help="Inference mode: 'distilled' (teacher-guided), 'gtonly' (pure GT supervision), or 'original' (base sam3)")
+    parser.add_argument("--finetune_type", type=str, default="lora", choices=["lora", "full"], help="Fine-tuning strategy used during training: 'lora' or 'full'. Used to auto-locate weights and init architecture.")
     parser.add_argument("--teacher_ckpt", type=str, 
                         default=Config.UNET_CKPT,
                         help="Path to Teacher U-Net checkpoint")
@@ -331,12 +332,12 @@ def main():
     student_ckpt = args.student_ckpt
     if student_ckpt is None:
         if args.mode == "distilled":
-            student_ckpt = "checkpoints/student_sam3_distilled.pth"
+            student_ckpt = f"checkpoints/student_sam3_distilled_{args.finetune_type}.pth"
         elif args.mode == "gtonly":
-            student_ckpt = "checkpoints/student_sam3_gtonly.pth"
+            student_ckpt = f"checkpoints/student_sam3_gtonly_{args.finetune_type}.pth"
 
     # Handle Output Directory
-    OUTPUT_DIR = f"{args.output_root}_{args.mode}" if args.mode != "distilled" else args.output_root
+    OUTPUT_DIR = f"{args.output_root}_{args.mode}_{args.finetune_type}" if args.mode != "distilled" else args.output_root
     
     LOAD_STUDENT_WEIGHTS = (args.mode in ["distilled", "gtonly"])
     
@@ -361,7 +362,8 @@ def main():
         teacher_ckpt=args.teacher_ckpt, 
         base_sam_ckpt=args.base_sam_ckpt, 
         student_ckpt=student_ckpt,
-        load_student_weights=LOAD_STUDENT_WEIGHTS
+        load_student_weights=LOAD_STUDENT_WEIGHTS,
+        use_lora=(args.finetune_type == "lora")
     )
     
     results_stats = []

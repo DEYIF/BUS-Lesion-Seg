@@ -1,0 +1,49 @@
+\section{Results}
+\label{sec:results}
+
+In this section, we present the quantitative evaluation of our proposed Sandwich Architecture and Distilled SAM3 approach against several baseline models. To ensure a comprehensive assessment, we rely on two primary metrics: the Dice Similarity Coefficient (DSC) and Intersection over Union (IoU). The experiments were conducted across four distinctly sourced external test datasets: BUID, BUSC, BUSUC, and UDIAT. The evaluated models include: 
+
+\begin{itemize}
+    \item \textbf{U-Net (Teacher Baseline)}: A standard U-Net architecture trained purely on ground truth annotations. Performance on this model serves as the conventional baseline.
+    \item \textbf{SAM 3 (Original)}: The frozen segment anything model utilized directly out-of-the-box, prompted with automated boxes to represent zero-shot capability without any domain-specific fine-tuning.
+    \item \textbf{SAM 3 (GT-Only)}: The SAM 3 model fine-tuned using only a standard segmentation loss (Dice + BCE) against the ground truth labels, lacking teacher guidance.
+    \item \textbf{SAM 3 (Distilled)}: Our proposed distillation method where a frozen U-Net Teacher guides the SAM 3 training via confidence-gated soft labels.
+    \item \textbf{Sandwich Architecture (U-Net + SAM 3 + U-Net)}: Our fully proposed cascaded architecture, which leverages the structural priors of the SAM 3 model fed into a trainable U-Net refiner via a 4-channel input tensor.
+\end{itemize}
+
+\subsection{Quantitative Comparison}
+
+Table \ref{tab:quantitative_results} summarizes the mean DSC and IoU metrics across the evaluated models on the external test sets. 
+
+\begin{table}[htbp]
+\centering
+\caption{Quantitative comparison (Mean Dice and Mean IoU) of different architectures on four external ultrasound datasets. The best results for each dataset are highlighted in \textbf{bold}.}
+\label{tab:quantitative_results}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|cc|cc|cc|cc|cc}
+\hline
+\multirow{2}{*}{\textbf{Method}} & \multicolumn{2}{c|}{\textbf{BUID}} & \multicolumn{2}{c|}{\textbf{BUSC}} & \multicolumn{2}{c|}{\textbf{BUSUC}} & \multicolumn{2}{c|}{\textbf{UDIAT}} & \multicolumn{2}{c}{\textbf{Overall}} \\ \cline{2-11} 
+ & DSC & IoU & DSC & IoU & DSC & IoU & DSC & IoU & DSC & IoU \\ \hline
+U-Net (Teacher) & \textbf{0.8999} & \textbf{0.8297} & \textbf{0.8757} & \textbf{0.7867} & \textbf{0.8993} & \textbf{0.8298} & \textbf{0.8078} & \textbf{0.7246} & \textbf{0.8851} & \textbf{0.8106} \\
+SAM 3 (Original) & 0.2031 & 0.1262 & 0.1713 & 0.0999 & 0.1935 & 0.1156 & 0.0478 & 0.0265 & 0.1749 & 0.1046 \\
+SAM 3 (GT-Only) & 0.7952 & 0.6964 & 0.8569 & 0.7628 & 0.8520 & 0.7622 & 0.7861 & 0.6958 & 0.8364 & 0.7444 \\
+SAM 3 (Distilled) & 0.7941 & 0.6849 & 0.8504 & 0.7530 & 0.8499 & 0.7566 & 0.7539 & 0.6483 & 0.8303 & 0.7325 \\
+Sandwich Architecture & 0.8681 & 0.7888 & 0.8523 & 0.7537 & 0.8778 & 0.7979 & 0.7801 & 0.7012 & 0.8609 & 0.7780 \\ \hline
+\end{tabular}
+}
+\end{table}
+
+\subsection{Analysis and Observations}
+
+Several crucial insights can be derived from the quantitative data presented in Table \ref{tab:quantitative_results}:
+
+\textbf{Limitations of Zero-Shot SAM 3:}
+The original, un-tuned SAM 3 model drastically underperforms (Overall DSC: $0.1749$) compared to all other models. This confirms that while foundation models are powerful for general image segmentation, they struggle significantly with the high noise, low contrast, and complex artifacts inherent to the breast ultrasound domain, validating the necessity of domain-specific adaptation strategies.
+
+\textbf{Distillation vs. Direct Supervision in SAM 3:}
+Interestingly, across the datasets, the GT-Only SAM 3 (Overall DSC: $0.8364$) performs marginally better than the Distilled SAM 3 (Overall DSC: $0.8303$). This suggests that directly supervising SAM 3's mask decoder with hard ground truth labels is currently more effective for this specific task than guiding it purely using soft labels from a U-Net teacher. The teacher network's own uncertainties might be confusing the foundation model rather than aiding it.
+
+\textbf{Effectiveness of the Sandwich Architecture:}
+Among the SAM-integrated approaches, the newly proposed Sandwich Architecture achieved the highest performance (Overall DSC: $0.8609$, IoU: $0.7780$). By freezing both the U-Net Teacher (for bounding box generation) and the SAM 3 model (for mask generation) and only training a final U-Net refiner on the combined 4-channel input, the model successfully learns to fuse original image textures with the foundation model's boundary priors. 
+
+While the Sandwich Architecture shows significant improvements over the fine-tuned SAM 3 models, the pure U-Net Baseline trained rigorously on the dataset still yielded the highest overall metrics (DSC: $0.8851$). This highlights a known challenge in medical imaging: relatively lightweight, domain-specialized convolutional networks often remain highly competitive, and fully unlocking the potential of foundation models in such specialized workflows remains an active area of research.
