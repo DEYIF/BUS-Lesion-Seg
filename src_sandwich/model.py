@@ -7,13 +7,7 @@ from torchvision.ops import masks_to_boxes
 # Import builds from existing modules
 from src_unet.model import build_unet
 from sam3.model_builder import build_sam3_image_model
-from src_distill.model import DistillModel # We can reuse parts or logic, but maybe cleaner to build afresh
-# Actually, DistillModel has the resize logic and SAM loading logic. 
-# But DistillModel couples Teacher and Student in a way that returns logits for distillation.
-# Here we want a 3-stage forward pass.
-# Let's copy relevant bits to be self-contained or inherit?
-# Inheriting might be messy if __init__ differs too much.
-# Let's composit.
+# DistillModel import removed (unused, causes peft version conflict)
 
 class SandwichModel(nn.Module):
     def __init__(self, unet1_ckpt, sam_ckpt, unet2_arch="resnet34", unet2_weights="imagenet"):

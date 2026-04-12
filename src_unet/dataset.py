@@ -205,6 +205,124 @@ def get_transforms(mode="train", use_sam_mask=False):
     
     return Compose(base_transforms)
 
+def force_prob_1ch(arr):
+    """
+    Convert a probability image to (1, H, W) float WITHOUT binarizing.
+    Used for soft SAM / UNet1 probability masks (values should stay in [0,1]).
+    """
+    if isinstance(arr, torch.Tensor):
+        arr = arr.detach().cpu().numpy()
+    if arr.ndim == 2:
+        arr = arr[np.newaxis, ...]
+    elif arr.ndim == 3:
+        if arr.shape[-1] <= 4:          # (H, W, C)
+            arr = np.transpose(arr, (2, 0, 1))
+        arr = arr[0:1]                  # keep only first channel
+    return arr.astype(np.float32)
+
+
+def get_transforms_v2(mode="train"):
+    """
+    Transforms for Sandwich V2 (5-channel: RGB + soft_SAM + soft_UNet1).
+    Loads sam3_probs/ and unet1_probs/ as continuous [0,1] float channels.
+    Adds extra augmentation for ultrasound: contrast, Gaussian noise/smooth.
+    """
+    from monai.transforms import RandAdjustContrastd, RandGaussianNoised, RandGaussianSmoothd
+    keys = ["image", "label", "sam_prob", "unet1_prob"]
+
+    transforms = [
+        LoadImaged(keys=keys, image_only=False, reverse_indexing=False),
+        Lambdad(keys=["image"],      func=force_rgb_cfirst),
+        Lambdad(keys=["label"],      func=force_label_1ch),   # binarize GT
+        Lambdad(keys=["sam_prob"],   func=force_prob_1ch),    # keep continuous
+        Lambdad(keys=["unet1_prob"], func=force_prob_1ch),    # keep continuous
+        ScaleIntensityd(keys=["image"]),
+        ScaleIntensityd(keys=["label"]),
+        ScaleIntensityd(keys=["sam_prob"]),    # 0-255 -> 0-1
+        ScaleIntensityd(keys=["unet1_prob"]),  # 0-255 -> 0-1
+        Resized(
+            keys=keys,
+            spatial_size=Config.IMAGE_SIZE,
+            mode=["bilinear", "nearest", "bilinear", "bilinear"],
+        ),
+    ]
+
+    if mode == "train":
+        transforms += [
+            RandFlipd(keys=keys, prob=0.5),
+            RandRotate90d(keys=keys, prob=0.5, spatial_axes=(0, 1)),
+            RandAdjustContrastd(keys=["image"], prob=0.3, gamma=(0.7, 1.5)),
+            RandGaussianNoised(keys=["image"], prob=0.2, std=0.05),
+            RandGaussianSmoothd(keys=["image"], prob=0.2,
+                                sigma_x=(0.5, 1.5), sigma_y=(0.5, 1.5)),
+        ]
+
+    transforms.append(EnsureTyped(keys=keys))
+    return Compose(transforms)
+
+
+def get_file_lists_v2(root_dir):
+    """
+    Like get_file_lists() but also includes sam3_probs/ and unet1_probs/ paths.
+    Raises a clear error if the precomputed directories are missing.
+    """
+    image_paths = sorted(glob.glob(os.path.join(root_dir, "images", "*.png")))
+    label_paths = sorted(glob.glob(os.path.join(root_dir, "labels", "*.png")))
+
+    sam_prob_dir   = os.path.join(root_dir, "sam3_probs")
+    unet1_prob_dir = os.path.join(root_dir, "unet1_probs")
+
+    for d in [sam_prob_dir, unet1_prob_dir]:
+        if not os.path.exists(d):
+            raise FileNotFoundError(
+                f"Directory not found: {d}\n"
+                "Run src_sandwich/precompute_masks_v2.py first."
+            )
+
+    print(f"Found {len(image_paths)} images and {len(label_paths)} labels")
+
+    data_list = []
+    for img_path, lbl_path in zip(image_paths, label_paths):
+        filename     = os.path.basename(img_path)
+        dataset_name = filename.split('_')[0]
+        data_list.append({
+            "image":      img_path,
+            "label":      lbl_path,
+            "sam_prob":   os.path.join(sam_prob_dir,   filename),
+            "unet1_prob": os.path.join(unet1_prob_dir, filename),
+            "dataset_name": dataset_name,
+        })
+
+    return data_list
+
+
+def get_dataloaders_v2():
+    """
+    DataLoaders for Sandwich V2 training (5-channel soft-mask input).
+    Expects sam3_probs/ and unet1_probs/ under Config.DATA_ROOT.
+    """
+    files = get_file_lists_v2(Config.DATA_ROOT)
+    print("V2 配对完成的文件数:", len(files))
+
+    train_files, val_files, _ = split_by_datasets(
+        files,
+        test_dataset_names=Config.EXTERNAL_TEST_DATASETS,
+        val_ratio=0.2,
+        seed=Config.SEED
+    )
+
+    print(f"训练集: {len(train_files)}, 验证集: {len(val_files)}")
+
+    train_ds = Dataset(data=train_files, transform=get_transforms_v2("train"))
+    val_ds   = Dataset(data=val_files,   transform=get_transforms_v2("val"))
+
+    train_loader = DataLoader(train_ds, batch_size=Config.BATCH_SIZE,
+                              shuffle=True,  num_workers=Config.NUM_WORKERS)
+    val_loader   = DataLoader(val_ds,   batch_size=Config.BATCH_SIZE,
+                              shuffle=False, num_workers=Config.NUM_WORKERS)
+    return train_loader, val_loader
+
+
 def get_dataloaders(use_sam_mask=False):
     files = get_file_lists(Config.DATA_ROOT, use_sam_mask=use_sam_mask)
     print("配对完成的文件数:", len(files))
