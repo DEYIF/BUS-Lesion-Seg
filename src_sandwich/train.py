@@ -19,7 +19,16 @@ def main():
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
     parser.add_argument("--save_path", type=str, default="checkpoints/sandwich_unet2.pth", help="Checkpoint save path")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint")
-    
+    parser.add_argument("--sam_mask_subdir", type=str, default="sam3_masks",
+                        help="Subdir under DATA_ROOT containing precomputed binary SAM masks. "
+                             "Use 'sam3_masks_lora' to train V1 with LoRA-SAM masks.")
+    parser.add_argument("--data_root", type=str,
+                        default="/home/maia-user/yufeng/Data/BUS_Mix_Seg",
+                        help="Override Config.DATA_ROOT for this training run.")
+    parser.add_argument("--external_test_datasets", type=str,
+                        default="BUSC,BUID,UDIAT,BUSUC",
+                        help="Comma-separated dataset names held out from training.")
+
     args = parser.parse_args()
     
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
@@ -49,13 +58,20 @@ def main():
     
     # Ensure config knows about batch size if it uses it directly (or we can override it if dataset.py was modified, but let's stick to default Config usage built-in)
     from src_unet.config import Config
-    Config.BATCH_SIZE = args.batch_size 
-    
+    Config.BATCH_SIZE = args.batch_size
+    Config.DATA_ROOT = args.data_root
+    ext_test = [s.strip() for s in args.external_test_datasets.split(",") if s.strip()]
+    Config.EXTERNAL_TEST_DATASETS = ext_test if ext_test else None
+
+    print(f"   data_root       = {Config.DATA_ROOT}")
+    print(f"   external_test   = {Config.EXTERNAL_TEST_DATASETS}")
+    print(f"   sam_mask_subdir = {args.sam_mask_subdir}")
     try:
-        train_loader, val_loader = get_dataloaders(use_sam_mask=True)
+        train_loader, val_loader = get_dataloaders(use_sam_mask=True,
+                                                   sam_mask_subdir=args.sam_mask_subdir)
     except Exception as e:
          print(f"❌ DataLoader error: {e}")
-         print("Did you run `src_sandwich/precompute_masks.py` first?")
+         print(f"Did you run `src_sandwich/precompute_masks.py` (or binarize_lora_probs_for_v1.py for {args.sam_mask_subdir}) first?")
          return
     
     best_loss = float('inf')

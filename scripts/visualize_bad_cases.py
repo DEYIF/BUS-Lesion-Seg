@@ -21,13 +21,17 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXP_DIR    = os.path.join(ROOT, "Experiments")
 DATA_DIR   = "/home/maia-user/yufeng/Data/BUS_Mix_Seg"
-OUT_DIR    = os.path.join(EXP_DIR, "bad_case_analysis")
+
+_SANDWICH_V1_DIR = os.path.join(EXP_DIR, "sandwich_v1_lora") \
+    if os.path.exists(os.path.join(EXP_DIR, "sandwich_v1_lora", "metrics.csv")) \
+    else os.path.join(EXP_DIR, "sandwich_original_sam3")
 
 MODELS = {
-    "UNet":     os.path.join(EXP_DIR, "unet"),
-    "SAM3":     os.path.join(EXP_DIR, "sam3_gtonly_gtonly"),
-    "SAM3-KD":  os.path.join(EXP_DIR, "sam3_distilled"),
-    "Sandwich": os.path.join(EXP_DIR, "sandwich_original_sam3"),
+    "U-Net":        os.path.join(EXP_DIR, "unet"),
+    "SAM 3":        os.path.join(EXP_DIR, "sam3_original"),
+    "SAM LoRA":     os.path.join(EXP_DIR, "sam3_gtonly_gtonly"),
+    "Sandwich V1": _SANDWICH_V1_DIR,
+    "Sandwich V2": os.path.join(EXP_DIR, "sandwich_v2_lora"),
 }
 PANEL_NAMES = ["Image", "GT"] + list(MODELS.keys())
 PANEL_W, PANEL_H = 300, 300
@@ -167,10 +171,19 @@ def make_summary_grid(rows, title, out_path, cols=3):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--threshold", type=float, default=0.3,
-                        help="Dice threshold for 'bad case' (default: 0.3)")
+    parser.add_argument("--threshold", type=float, default=0.7,
+                        help="Dice threshold for 'bad case' (default: 0.7)")
+    parser.add_argument("--out_suffix", type=str, default=None,
+                        help="Override OUT_DIR suffix. Default: bad_case_analysis_v2_dice<int(threshold*10)>")
     args = parser.parse_args()
     threshold = args.threshold
+
+    if args.out_suffix is not None:
+        out_name = args.out_suffix
+    else:
+        out_name = f"bad_case_analysis_v2_dice{int(round(threshold*10)):02d}"
+    OUT_DIR = os.path.join(EXP_DIR, out_name)
+    print(f"[visualize_bad_cases] threshold={threshold}, OUT_DIR={OUT_DIR}")
 
     os.makedirs(os.path.join(OUT_DIR, "per_case"), exist_ok=True)
 
@@ -183,8 +196,8 @@ def main():
             print(f"Warning: metrics not found for {model_name}")
             metrics_per_model[model_name] = {}
 
-    unet_metrics = metrics_per_model["UNet"]
-    sam3_metrics = metrics_per_model["SAM3"]
+    unet_metrics = metrics_per_model["U-Net"]
+    sam3_metrics = metrics_per_model["SAM LoRA"]
 
     all_filenames = set(unet_metrics.keys())
 
@@ -270,6 +283,24 @@ def main():
             f.write(f"  {m:12s}: {cnt:3d} / {len(unet_metrics)}\n")
         f.write("\n")
 
+        # ── Fix-rate verification across all Sandwich variants ─────────
+        variant_keys = [
+            ("Sandwich V1", "V1"),
+            ("Sandwich V2", "V2"),
+        ]
+        present = [(k, lab) for k, lab in variant_keys if metrics_per_model.get(k)]
+        if present:
+            f.write(f"── SANDWICH FIX-RATE VERIFICATION (threshold {threshold}) ──\n")
+            for cat in ["only_unet_bad", "both_bad", "only_sam3_bad"]:
+                fnames = categories[cat]
+                parts = [f"{cat:18s}: cases={len(fnames)}"]
+                for k, lab in present:
+                    mm = metrics_per_model[k]
+                    fixed = sum(1 for fn in fnames if mm.get(fn) and mm[fn][1] >= threshold)
+                    parts.append(f"{lab} {fixed}/{len(fnames)}")
+                f.write("  " + " | ".join(parts) + "\n")
+            f.write("\n")
+
         for cat_name, fnames in categories.items():
             f.write(f"── {cat_name.upper()} ({len(fnames)} cases) ──\n")
             for fname in sorted(fnames):
@@ -287,7 +318,7 @@ def main():
                     gt_area_pct = 100 * label_nz / l_arr.size
                     line += f"  GT_area={gt_area_pct:.1f}%"
                     # Guess failure mode
-                    unet_mask_path = os.path.join(MODELS["UNet"], dataset, "masks", fname)
+                    unet_mask_path = os.path.join(MODELS["U-Net"], dataset, "masks", fname)
                     if os.path.exists(unet_mask_path):
                         u_arr = np.array(Image.open(unet_mask_path).convert("L"))
                         u_nz = np.count_nonzero(u_arr)

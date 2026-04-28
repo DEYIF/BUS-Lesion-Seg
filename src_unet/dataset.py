@@ -13,11 +13,15 @@ from .config import Config
 from pathlib import Path
 import torch
 
-def get_file_lists(root_dir, use_sam_mask=False):
-    """读取 image 和 label 的路径, 可选读取预计算的 sam_mask"""
+def get_file_lists(root_dir, use_sam_mask=False, sam_mask_subdir="sam3_masks"):
+    """读取 image 和 label 的路径, 可选读取预计算的 sam_mask
+
+    sam_mask_subdir 让 V1 流水线可以切换到 LoRA-SAM 的二值 mask
+    （'sam3_masks_lora'）而无需改其他逻辑。
+    """
     image_paths = sorted(glob.glob(os.path.join(root_dir, "images", "*.png")))
     label_paths = sorted(glob.glob(os.path.join(root_dir, "labels", "*.png")))
-    
+
     print(f"找到 {len(image_paths)} 张图像 和 {len(label_paths)} 个标签")
     if len(image_paths) == 0:
         raise ValueError(f"在 {root_dir} 中未找到图像")
@@ -25,9 +29,9 @@ def get_file_lists(root_dir, use_sam_mask=False):
         print (len(image_paths), len(label_paths))
         raise ValueError("Image 和 Label 数量不匹配")
 
-    sam_mask_dir = os.path.join(root_dir, "sam3_masks")
+    sam_mask_dir = os.path.join(root_dir, sam_mask_subdir)
     if use_sam_mask and not os.path.exists(sam_mask_dir):
-        print("⚠️ 警告: 请求了使用 sam_mask，但未找到 sam3_masks 目录，模型可能会报错！")
+        print(f"⚠️ 警告: 请求了使用 sam_mask，但未找到 {sam_mask_dir}，模型可能会报错！")
 
     data_list = []
     dataset_stats = {} # 用于统计每个数据集有多少张图
@@ -261,16 +265,19 @@ def get_transforms_v2(mode="train"):
     return Compose(transforms)
 
 
-def get_file_lists_v2(root_dir):
+def get_file_lists_v2(root_dir, sam_prob_subdir="sam3_probs", unet1_prob_subdir="unet1_probs"):
     """
     Like get_file_lists() but also includes sam3_probs/ and unet1_probs/ paths.
     Raises a clear error if the precomputed directories are missing.
+
+    sam_prob_subdir/unet1_prob_subdir let the caller point at a specific cache
+    (e.g. 'sam3_probs_lora' for LoRA-adapted SAM output) without touching layout.
     """
     image_paths = sorted(glob.glob(os.path.join(root_dir, "images", "*.png")))
     label_paths = sorted(glob.glob(os.path.join(root_dir, "labels", "*.png")))
 
-    sam_prob_dir   = os.path.join(root_dir, "sam3_probs")
-    unet1_prob_dir = os.path.join(root_dir, "unet1_probs")
+    sam_prob_dir   = os.path.join(root_dir, sam_prob_subdir)
+    unet1_prob_dir = os.path.join(root_dir, unet1_prob_subdir)
 
     for d in [sam_prob_dir, unet1_prob_dir]:
         if not os.path.exists(d):
@@ -296,17 +303,28 @@ def get_file_lists_v2(root_dir):
     return data_list
 
 
-def get_dataloaders_v2():
+def get_dataloaders_v2(data_root=None, sam_prob_subdir="sam3_probs",
+                       unet1_prob_subdir="unet1_probs",
+                       external_test_datasets=None):
     """
     DataLoaders for Sandwich V2 training (5-channel soft-mask input).
-    Expects sam3_probs/ and unet1_probs/ under Config.DATA_ROOT.
+    Expects <sam_prob_subdir>/ and <unet1_prob_subdir>/ under data_root.
+
+    If arguments are None, falls back to Config defaults (backwards-compatible).
     """
-    files = get_file_lists_v2(Config.DATA_ROOT)
+    if data_root is None:
+        data_root = Config.DATA_ROOT
+    if external_test_datasets is None:
+        external_test_datasets = Config.EXTERNAL_TEST_DATASETS
+
+    files = get_file_lists_v2(data_root,
+                              sam_prob_subdir=sam_prob_subdir,
+                              unet1_prob_subdir=unet1_prob_subdir)
     print("V2 配对完成的文件数:", len(files))
 
     train_files, val_files, _ = split_by_datasets(
         files,
-        test_dataset_names=Config.EXTERNAL_TEST_DATASETS,
+        test_dataset_names=external_test_datasets,
         val_ratio=0.2,
         seed=Config.SEED
     )
@@ -323,8 +341,9 @@ def get_dataloaders_v2():
     return train_loader, val_loader
 
 
-def get_dataloaders(use_sam_mask=False):
-    files = get_file_lists(Config.DATA_ROOT, use_sam_mask=use_sam_mask)
+def get_dataloaders(use_sam_mask=False, sam_mask_subdir="sam3_masks"):
+    files = get_file_lists(Config.DATA_ROOT, use_sam_mask=use_sam_mask,
+                           sam_mask_subdir=sam_mask_subdir)
     print("配对完成的文件数:", len(files))
     
     # 划分训练/验证集 (按数据集划分)

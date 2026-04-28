@@ -41,14 +41,18 @@ def scan_inference_files(root_dir):
     return data_list
 
 class SandwichInferencer:
-    def __init__(self, unet1_ckpt, sam_ckpt, unet2_ckpt, device='cuda'):
+    def __init__(self, unet1_ckpt, sam_ckpt, unet2_ckpt, device='cuda',
+                 sam_lora_ckpt=None):
         self.device = device
         print(f"🚀 Loading SandwichModel on {device}...")
-        self.model = SandwichModel(unet1_ckpt, sam_ckpt).to(device)
+        self.model = SandwichModel(unet1_ckpt, sam_ckpt,
+                                   sam_lora_ckpt=sam_lora_ckpt).to(device)
         
         if os.path.exists(unet2_ckpt):
             print(f"🔥 Loading U-Net 2 weights from {unet2_ckpt}")
-            self.model.unet2.load_state_dict(torch.load(unet2_ckpt, map_location=device))
+            ckpt = torch.load(unet2_ckpt, map_location=device, weights_only=False)
+            sd = ckpt['model_state_dict'] if isinstance(ckpt, dict) and 'model_state_dict' in ckpt else ckpt
+            self.model.unet2.load_state_dict(sd)
         else:
             print(f"⚠️ U-Net 2 checkpoint not found at {unet2_ckpt}")
             
@@ -177,28 +181,36 @@ def main():
     parser.add_argument("--teacher_ckpt", type=str, 
                         default="/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/best_teacher_unet_BUSC_BUID_UDIAT_BUSUC.pth",
                         help="Path to Teacher U-Net checkpoint")
-    parser.add_argument("--base_sam_ckpt", type=str, 
+    parser.add_argument("--base_sam_ckpt", type=str,
                         default="/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/sam3.pt",
                         help="Path to Base SAM3 checkpoint")
-    parser.add_argument("--unet2_ckpt", type=str, 
+    parser.add_argument("--sam_lora_ckpt", type=str, default=None,
+                        help="Optional LoRA adapter checkpoint to merge into SAM3 decoder. "
+                             "Pass e.g. checkpoints/student_sam3_gtonly_lora.pth for V1+LoRA inference.")
+    parser.add_argument("--unet2_ckpt", type=str,
                         default="/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/sandwich_unet2.pth",
                         help="Path to Trained U-Net2 weights")
     parser.add_argument("--output_root", type=str, default="inference_results_sandwich", help="Root for output")
     parser.add_argument("--data_root", type=str, default="/home/maia-user/yufeng/Data/BUS_Mix_Seg", help="Root for inference data")
+    parser.add_argument("--target_datasets", type=str,
+                        default="BUSC,BUID,UDIAT,BUSUC",
+                        help="Comma-separated dataset names to evaluate. Empty string = all.")
+    parser.add_argument("--no_overlay", action="store_true",
+                        help="Skip matplotlib overlay PNG saving (much faster). Masks are still saved.")
     
     args = parser.parse_args()
 
     INFERENCE_ROOT = args.data_root
     OUTPUT_DIR = args.output_root
     
-    # Try using Config if data_root is default
-    TARGET_DATASETS = None
-    if args.data_root == "/home/maia-user/yufeng/Data/BUS_Mix_Seg":
+    # Filter by --target_datasets (or fall back to Config if explicitly empty)
+    TARGET_DATASETS = [s.strip() for s in args.target_datasets.split(",") if s.strip()]
+    if not TARGET_DATASETS:
         try:
             from src_unet.config import Config
             TARGET_DATASETS = Config.EXTERNAL_TEST_DATASETS
         except:
-            pass
+            TARGET_DATASETS = None
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
@@ -216,7 +228,8 @@ def main():
         print("No files found! Check INFERENCE_ROOT.")
         return
 
-    inferencer = SandwichInferencer(args.teacher_ckpt, args.base_sam_ckpt, args.unet2_ckpt)
+    inferencer = SandwichInferencer(args.teacher_ckpt, args.base_sam_ckpt, args.unet2_ckpt,
+                                    sam_lora_ckpt=args.sam_lora_ckpt)
     
     results_stats = []
     
@@ -228,46 +241,46 @@ def main():
             filename = res['filename']
             
             # Save visual
-            save_dir = os.path.join(OUTPUT_DIR, dataset_name, "overlays")
             mask_dir = os.path.join(OUTPUT_DIR, dataset_name, "masks")
-            os.makedirs(save_dir, exist_ok=True)
             os.makedirs(mask_dir, exist_ok=True)
-            
-            # Simple Plot
-            fig, ax = plt.subplots(1, 4, figsize=(16, 4))
-            ax[0].imshow(res['image'], cmap="gray")
-            ax[0].set_title("Input")
-            
-            ax[1].imshow(res['image'], cmap="gray")
-            mask_overlay1 = np.zeros_like(res['image'])
-            mask_overlay1[:, :, 0] = res['pred_unet1'] 
-            ax[1].imshow(mask_overlay1, alpha=0.4)
-            ax[1].set_title("Stage 1: U-Net1")
-            
-            ax[2].imshow(res['image'], cmap="gray")
-            mask_overlay2 = np.zeros_like(res['image'])
-            mask_overlay2[:, :, 0] = res['pred_sam']
-            ax[2].imshow(mask_overlay2, alpha=0.4)
-            ax[2].set_title("Stage 2: SAM3")
-            
-            ax[3].imshow(res['image'], cmap="gray")
-            mask_overlay3 = np.zeros_like(res['image'])
-            mask_overlay3[:, :, 0] = res['pred_final'] # Red for Pred
-            
-            # Request: Overlay GT
-            if 'gt' in res:
-                mask_overlay3[:, :, 1] = res['gt'] # Green for GT
-                
-            ax[3].imshow(mask_overlay3, alpha=0.4)
-            
-            title_final = "Final(R=Pred, G=GT)" if 'gt' in res else "Stage 3: Final"
-            if 'dice' in res:
-                title_final += f"\nDice: {res['dice']:.4f}"
-            ax[3].set_title(title_final, fontsize=10)
-            
-            plt.tight_layout()
-            plt.savefig(os.path.join(save_dir, filename))
-            plt.close()
+
+            if not args.no_overlay:
+                save_dir = os.path.join(OUTPUT_DIR, dataset_name, "overlays")
+                os.makedirs(save_dir, exist_ok=True)
+
+                fig, ax = plt.subplots(1, 4, figsize=(16, 4))
+                ax[0].imshow(res['image'], cmap="gray")
+                ax[0].set_title("Input")
+
+                ax[1].imshow(res['image'], cmap="gray")
+                mask_overlay1 = np.zeros_like(res['image'])
+                mask_overlay1[:, :, 0] = res['pred_unet1']
+                ax[1].imshow(mask_overlay1, alpha=0.4)
+                ax[1].set_title("Stage 1: U-Net1")
+
+                ax[2].imshow(res['image'], cmap="gray")
+                mask_overlay2 = np.zeros_like(res['image'])
+                mask_overlay2[:, :, 0] = res['pred_sam']
+                ax[2].imshow(mask_overlay2, alpha=0.4)
+                ax[2].set_title("Stage 2: SAM3")
+
+                ax[3].imshow(res['image'], cmap="gray")
+                mask_overlay3 = np.zeros_like(res['image'])
+                mask_overlay3[:, :, 0] = res['pred_final']
+
+                if 'gt' in res:
+                    mask_overlay3[:, :, 1] = res['gt']
+
+                ax[3].imshow(mask_overlay3, alpha=0.4)
+
+                title_final = "Final(R=Pred, G=GT)" if 'gt' in res else "Stage 3: Final"
+                if 'dice' in res:
+                    title_final += f"\nDice: {res['dice']:.4f}"
+                ax[3].set_title(title_final, fontsize=10)
+
+                plt.tight_layout()
+                plt.savefig(os.path.join(save_dir, filename), dpi=80)
+                plt.close()
             
             # Save Mask
             mask_uint8 = (res['pred_final'] * 255).astype(np.uint8)

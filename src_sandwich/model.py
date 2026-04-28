@@ -10,9 +10,10 @@ from sam3.model_builder import build_sam3_image_model
 # DistillModel import removed (unused, causes peft version conflict)
 
 class SandwichModel(nn.Module):
-    def __init__(self, unet1_ckpt, sam_ckpt, unet2_arch="resnet34", unet2_weights="imagenet"):
+    def __init__(self, unet1_ckpt, sam_ckpt, unet2_arch="resnet34",
+                 unet2_weights="imagenet", sam_lora_ckpt=None):
         super().__init__()
-        
+
         # === Stage 1: U-Net Teacher (Frozen) ===
         print("🥪 Layer 1: Loading U-Net Teacher (Frozen)...")
         self.unet1 = build_unet()
@@ -23,8 +24,8 @@ class SandwichModel(nn.Module):
         self.unet1.eval()
         for p in self.unet1.parameters():
             p.requires_grad = False
-            
-        # === Stage 2: SAM 3 (Frozen) ===
+
+        # === Stage 2: SAM 3 (Frozen, optionally LoRA-adapted) ===
         print(f"🥪 Layer 2: Loading SAM 3 (Frozen) from {sam_ckpt}...")
         self.sam = build_sam3_image_model(
             checkpoint_path=sam_ckpt,
@@ -32,6 +33,17 @@ class SandwichModel(nn.Module):
             eval_mode=True, # Fully frozen
             enable_inst_interactivity=False
         )
+
+        if sam_lora_ckpt is not None:
+            from src_sandwich.model_v2 import _merge_lora_into_sam_decoder
+            print(f"🥪 Layer 2: Merging LoRA weights from {sam_lora_ckpt} "
+                  f"into SAM decoder (r=8, alpha=16, linear1+linear2)...")
+            lora_ckpt = torch.load(sam_lora_ckpt, map_location='cpu', weights_only=False)
+            lora_sd = lora_ckpt['model_state_dict'] if isinstance(lora_ckpt, dict) \
+                      and 'model_state_dict' in lora_ckpt else lora_ckpt
+            n_merged = _merge_lora_into_sam_decoder(self.sam, lora_sd, r=8, lora_alpha=16)
+            print(f"🥪 Layer 2: merged {n_merged} LoRA adapter pairs.")
+
         # Freeze SAM completely
         for p in self.sam.parameters():
             p.requires_grad = False
