@@ -52,7 +52,26 @@ def main():
                         help="Run validation every N epochs")
     parser.add_argument("--save_path",  type=str,
                         default="checkpoints/sandwich_unet2_v2.pth")
-    parser.add_argument("--resume",     action="store_true")
+    parser.add_argument("--data_root",  type=str,
+                        default="/home/maia-user/yufeng/Data/BUS_Mix_Seg",
+                        help="Root holding images/, labels/, sam3_probs_*/, unet1_probs/.")
+    parser.add_argument("--sam_prob_subdir", type=str, default="sam3_probs_lora",
+                        help="Subdirectory name of SAM probability maps. "
+                             "Use 'sam3_probs' for the original (pre-LoRA) cache.")
+    parser.add_argument("--external_test_datasets", type=str,
+                        default="BUSC,BUID,UDIAT,BUSUC",
+                        help="Comma-separated dataset names to hold out as external test.")
+    parser.add_argument("--p_u1_dropout", type=float, default=0.0,
+                        help="Per-sample probability of zeroing the entire P_U1 channel "
+                             "during training (0 = disabled). 0.3 recommended to break "
+                             "Student shortcut learning towards U-Net1.")
+    parser.add_argument("--resume",     action="store_true",
+                        help="Strict resume: load weights + optimizer + step counter from "
+                             "save_path. Continues epoch numbering from the checkpoint.")
+    parser.add_argument("--fine_tune_from", type=str, default=None,
+                        help="Load model weights from this checkpoint and start a fresh "
+                             "schedule from epoch 0 (ignores optimizer/epoch state). "
+                             "Use this for re-training with new objective like p_u1_dropout.")
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
@@ -82,12 +101,18 @@ def main():
         return dice_loss(pred_logits, gt_mask) + bce_loss(pred_logits, gt_mask)
 
     # ── Data ───────────────────────────────────────────────────────────────
-    print("Loading V2 dataloaders (soft masks)...")
+    print(f"Loading V2 dataloaders (soft masks) from {args.data_root} "
+          f"(SAM subdir: {args.sam_prob_subdir})...")
     from src_unet.config import Config
     Config.BATCH_SIZE = args.batch_size
 
+    ext_test = [s.strip() for s in args.external_test_datasets.split(",") if s.strip()]
     try:
-        train_loader, val_loader = get_dataloaders_v2()
+        train_loader, val_loader = get_dataloaders_v2(
+            data_root=args.data_root,
+            sam_prob_subdir=args.sam_prob_subdir,
+            external_test_datasets=ext_test,
+        )
     except FileNotFoundError as e:
         print(f"Error: {e}")
         return
@@ -98,7 +123,7 @@ def main():
 
     if args.resume and os.path.exists(args.save_path):
         print(f"Resuming from {args.save_path}")
-        ckpt = torch.load(args.save_path, map_location=device)
+        ckpt = torch.load(args.save_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch   = ckpt["epoch"] + 1
@@ -107,6 +132,13 @@ def main():
         for _ in range(start_epoch):
             scheduler.step()
         print(f"Resumed from epoch {start_epoch}, best val Dice = {best_val_dice:.4f}")
+    elif args.fine_tune_from and os.path.exists(args.fine_tune_from):
+        print(f"Fine-tuning from {args.fine_tune_from} (fresh schedule starting epoch 0)")
+        ckpt = torch.load(args.fine_tune_from, map_location=device, weights_only=False)
+        sd = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+        model.load_state_dict(sd)
+        # optimizer + scheduler stay fresh, start_epoch = 0, best_val_dice = 0
+        print("  Loaded weights only. Optimizer + scheduler reset.")
 
     # ── Training Loop ──────────────────────────────────────────────────────
     print(f"Training {args.epochs} epochs, val every {args.val_interval} epochs...")
@@ -121,6 +153,13 @@ def main():
             masks      = batch["label"].to(device)       # (B, 1, H, W)
             sam_probs  = batch["sam_prob"].to(device)    # (B, 1, H, W)  continuous
             unet1_probs = batch["unet1_prob"].to(device) # (B, 1, H, W)  continuous
+
+            # B2: per-sample P_U1 channel dropout (training only)
+            if args.p_u1_dropout > 0:
+                B = unet1_probs.shape[0]
+                keep = (torch.rand(B, device=device) >= args.p_u1_dropout).float()
+                keep = keep.view(B, 1, 1, 1)
+                unet1_probs = unet1_probs * keep
 
             unet2_input = torch.cat([images, sam_probs, unet1_probs], dim=1)  # (B,5,H,W)
             unet2_logits = model(unet2_input)

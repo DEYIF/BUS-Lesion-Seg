@@ -26,12 +26,20 @@ _SANDWICH_V1_DIR = os.path.join(EXP_DIR, "sandwich_v1_lora") \
     if os.path.exists(os.path.join(EXP_DIR, "sandwich_v1_lora", "metrics.csv")) \
     else os.path.join(EXP_DIR, "sandwich_original_sam3")
 
+# Sandwich V2 = best available variant (with dropout + A1 R6 if present, else baseline)
+_V2_CANDIDATES = ["sandwich_v2_lora_drop_a1", "sandwich_v2_lora_drop", "sandwich_v2_lora"]
+_SANDWICH_V2_DIR = next(
+    (os.path.join(EXP_DIR, c) for c in _V2_CANDIDATES
+     if os.path.exists(os.path.join(EXP_DIR, c, "metrics.csv"))),
+    os.path.join(EXP_DIR, "sandwich_v2_lora"),
+)
+
 MODELS = {
     "U-Net":        os.path.join(EXP_DIR, "unet"),
     "SAM 3":        os.path.join(EXP_DIR, "sam3_original"),
     "SAM LoRA":     os.path.join(EXP_DIR, "sam3_gtonly_gtonly"),
     "Sandwich V1": _SANDWICH_V1_DIR,
-    "Sandwich V2": os.path.join(EXP_DIR, "sandwich_v2_lora"),
+    "Sandwich V2": _SANDWICH_V2_DIR,
 }
 PANEL_NAMES = ["Image", "GT"] + list(MODELS.keys())
 PANEL_W, PANEL_H = 300, 300

@@ -50,10 +50,14 @@ def scan_inference_files(root_dir):
 
 
 class SandwichV2Inferencer:
-    def __init__(self, unet1_ckpt, sam_ckpt, unet2_ckpt, device='cuda'):
+    def __init__(self, unet1_ckpt, sam_ckpt, unet2_ckpt, device='cuda',
+                 sam_lora_ckpt=None):
         self.device = device
         print(f"Loading SandwichModelV2 on {device}...")
-        self.model = SandwichModelV2(unet1_ckpt, sam_ckpt).to(device)
+        self.model = SandwichModelV2(
+            unet1_ckpt, sam_ckpt,
+            sam_lora_ckpt=sam_lora_ckpt,
+        ).to(device)
 
         if os.path.exists(unet2_ckpt):
             print(f"Loading V2 U-Net 2 weights from {unet2_ckpt}")
@@ -111,7 +115,12 @@ class SandwichV2Inferencer:
         u = pred.sum() + gt.sum() - i
         return (i + smooth) / (u + smooth)
 
-    def run_sample(self, data_item):
+    def run_sample(self, data_item, a1_cfg=None):
+        """
+        a1_cfg: optional dict with keys
+            v1_mask_dir, a1_v2_v1_ratio, a1_v1_min_area
+        If provided AND the trigger fires, V2's final mask is replaced with V1's.
+        """
         has_label = data_item.get("label") is not None
 
         if has_label:
@@ -134,7 +143,7 @@ class SandwichV2Inferencer:
             unet2_logits, sam_soft, unet1_soft, unet1_mask = self.model(img_tensor_512)
             unet2_prob = torch.sigmoid(unet2_logits)
 
-        # ── Adaptive fallback ──────────────────────────────────────────────
+        # ── Adaptive fallback (existing): empty student → UNet1 ────────────
         student_empty = ((unet2_prob > 0.5).float().sum() == 0)
         if student_empty:
             final_prob_512 = unet1_soft    # fall back to UNet1
@@ -142,6 +151,30 @@ class SandwichV2Inferencer:
         else:
             final_prob_512 = unet2_prob
             used_fallback  = False
+
+        # ── A1 fallback: V2 area << V1+LoRA area → use V1 mask ─────────────
+        used_a1 = False
+        if a1_cfg is not None and not used_fallback:
+            ds_name  = data_item.get("dataset_name") or os.path.basename(data_item["image"]).split("_")[0]
+            filename = os.path.basename(data_item["image"])
+            v1_path  = os.path.join(a1_cfg["v1_mask_dir"], ds_name, "masks", filename)
+            if os.path.exists(v1_path):
+                v1_arr = np.array(Image.open(v1_path).convert("L"))
+                if v1_arr.shape != (512, 512):
+                    v1_arr = np.array(
+                        Image.fromarray(v1_arr).resize((512, 512), Image.NEAREST)
+                    )
+                v1_bin = (v1_arr > 127).astype(np.float32)
+
+                v2_bin   = (final_prob_512 > 0.5).float()[0, 0].cpu().numpy()
+                v2_area  = float(v2_bin.sum())
+                v1_area  = float(v1_bin.sum())
+                img_size = float(v2_bin.size)
+
+                if v1_area > a1_cfg["a1_v1_min_area"] * img_size and \
+                   v2_area > a1_cfg["a1_over_ratio"] * v1_area:
+                    final_prob_512 = torch.from_numpy(v1_bin).float()[None, None].to(self.device)
+                    used_a1 = True
         # ──────────────────────────────────────────────────────────────────
 
         probs_orig    = F.interpolate(final_prob_512, size=(orig_h, orig_w),
@@ -164,6 +197,7 @@ class SandwichV2Inferencer:
             "pred_sam":     pred_sam_np,
             "pred_unet1":   pred_u1_np,
             "used_fallback": used_fallback,
+            "used_a1":      used_a1,
             "has_label":    has_label,
             "filename":     os.path.basename(data_item["image"])
         }
@@ -189,9 +223,33 @@ def main():
                         default="/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/sam3.pt")
     parser.add_argument("--unet2_ckpt", type=str,
                         default="/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/sandwich_unet2_v2.pth")
+    parser.add_argument("--sam_lora_ckpt", type=str, default="none",
+                        help="LoRA adapter weights. 'none' to disable.")
     parser.add_argument("--output_root", type=str, default="Experiments/sandwich_v2")
     parser.add_argument("--data_root", type=str,
                         default="/home/maia-user/yufeng/Data/BUS_Mix_Seg")
+    parser.add_argument("--target_datasets", type=str, default="BUSC,BUID,UDIAT,BUSUC",
+                        help="Comma-separated dataset names for evaluation.")
+    # ── A1 (V2-vs-V1 over-segmentation fallback, rule R6) ─────────────────
+    # Rule (default R6): use V1 if v2_area > over_ratio * v1_area AND
+    #                                v1_area > min_area * image_size.
+    # Rationale: empirically the dominant V2 retreat mode is OVER-segmentation
+    # (V2 mask is much LARGER than V1 mask while V1 is reasonably confident).
+    # See ReportsCC/2026-04-29 report for offline rule sweep.
+    parser.add_argument("--enable_a1", action="store_true",
+                        help="Enable A1 fallback: when V2 mask area is much LARGER "
+                             "than V1+LoRA mask area (and V1 is confident), use V1 mask.")
+    parser.add_argument("--v1_mask_dir", type=str,
+                        default="Experiments/sandwich_v1_lora",
+                        help="Directory holding V1+LoRA per-dataset masks "
+                             "(<dataset>/masks/<filename>.png)")
+    parser.add_argument("--a1_over_ratio", type=float, default=1.5,
+                        help="Trigger A1 if v2_area > over_ratio * v1_area (default 1.5).")
+    parser.add_argument("--a1_v1_min_area", type=float, default=0.01,
+                        help="Trigger A1 only if v1_area > min_area * image_size "
+                             "(default 0.01 = 1% of image, filters out tiny V1 masks).")
+    parser.add_argument("--no_overlay", action="store_true",
+                        help="Skip matplotlib overlay PNG saving for speed.")
     args = parser.parse_args()
 
     OUTPUT_DIR = os.path.join(
@@ -201,62 +259,82 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    try:
-        from src_unet.config import Config
-        TARGET_DATASETS = Config.EXTERNAL_TEST_DATASETS
-    except Exception:
-        TARGET_DATASETS = None
+    lora_ckpt = None if args.sam_lora_ckpt.lower() == "none" else args.sam_lora_ckpt
+
+    TARGET_DATASETS = [s.strip() for s in args.target_datasets.split(",") if s.strip()]
 
     all_files = scan_inference_files(args.data_root)
     target_files = [x for x in all_files if x["dataset_name"] in TARGET_DATASETS] \
         if TARGET_DATASETS else all_files
 
-    print(f"Found {len(target_files)} samples.")
+    print(f"Found {len(target_files)} samples from {TARGET_DATASETS}.")
     inferencer = SandwichV2Inferencer(args.teacher_ckpt, args.base_sam_ckpt,
-                                      args.unet2_ckpt, device=device)
+                                      args.unet2_ckpt, device=device,
+                                      sam_lora_ckpt=lora_ckpt)
+
+    a1_cfg = None
+    if args.enable_a1:
+        v1_dir = args.v1_mask_dir
+        if not os.path.isabs(v1_dir):
+            v1_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), v1_dir)
+        a1_cfg = {
+            "v1_mask_dir":    v1_dir,
+            "a1_over_ratio":  args.a1_over_ratio,
+            "a1_v1_min_area": args.a1_v1_min_area,
+        }
+        print(f"A1 fallback enabled. v1_mask_dir={v1_dir}, "
+              f"trigger if v2_area > {args.a1_over_ratio} * v1_area "
+              f"AND v1_area > {args.a1_v1_min_area} * image_size")
 
     results_stats = []
     fallback_count = 0
+    a1_count = 0
 
     for item in tqdm(target_files, desc="Sandwich V2"):
         try:
-            res = inferencer.run_sample(item)
+            res = inferencer.run_sample(item, a1_cfg=a1_cfg)
             dataset_name = item["dataset_name"]
             filename = res["filename"]
             if res["used_fallback"]:
                 fallback_count += 1
+            if res.get("used_a1"):
+                a1_count += 1
 
-            save_dir = os.path.join(OUTPUT_DIR, dataset_name, "overlays")
             mask_dir = os.path.join(OUTPUT_DIR, dataset_name, "masks")
-            os.makedirs(save_dir, exist_ok=True)
             os.makedirs(mask_dir, exist_ok=True)
 
-            fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-            axes[0].imshow(res["image"], cmap="gray"); axes[0].set_title("Input"); axes[0].axis("off")
+            if not args.no_overlay:
+                save_dir = os.path.join(OUTPUT_DIR, dataset_name, "overlays")
+                os.makedirs(save_dir, exist_ok=True)
 
-            axes[1].imshow(res["image"], cmap="gray")
-            ov1 = np.zeros_like(res["image"]); ov1[:,:,0] = res["pred_unet1"]
-            axes[1].imshow(ov1, alpha=0.4); axes[1].set_title("Stage1 UNet"); axes[1].axis("off")
+                fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+                axes[0].imshow(res["image"], cmap="gray"); axes[0].set_title("Input"); axes[0].axis("off")
 
-            axes[2].imshow(res["image"], cmap="gray")
-            ov2 = np.zeros_like(res["image"]); ov2[:,:,0] = res["pred_sam"]
-            axes[2].imshow(ov2, alpha=0.4); axes[2].set_title("Stage2 SAM"); axes[2].axis("off")
+                axes[1].imshow(res["image"], cmap="gray")
+                ov1 = np.zeros_like(res["image"]); ov1[:,:,0] = res["pred_unet1"]
+                axes[1].imshow(ov1, alpha=0.4); axes[1].set_title("Stage1 UNet"); axes[1].axis("off")
 
-            axes[3].imshow(res["image"], cmap="gray")
-            ov3 = np.zeros_like(res["image"]); ov3[:,:,0] = res["pred_final"]
-            if "gt" in res:
-                ov3[:,:,1] = res["gt"]
-            axes[3].imshow(ov3, alpha=0.4)
-            title = "V2 Final"
-            if res["used_fallback"]:
-                title += " [fallback]"
-            if "dice" in res:
-                title += f"\nDice={res['dice']:.4f}"
-            axes[3].set_title(title, fontsize=9); axes[3].axis("off")
+                axes[2].imshow(res["image"], cmap="gray")
+                ov2 = np.zeros_like(res["image"]); ov2[:,:,0] = res["pred_sam"]
+                axes[2].imshow(ov2, alpha=0.4); axes[2].set_title("Stage2 SAM"); axes[2].axis("off")
 
-            plt.tight_layout()
-            plt.savefig(os.path.join(save_dir, filename), dpi=80)
-            plt.close()
+                axes[3].imshow(res["image"], cmap="gray")
+                ov3 = np.zeros_like(res["image"]); ov3[:,:,0] = res["pred_final"]
+                if "gt" in res:
+                    ov3[:,:,1] = res["gt"]
+                axes[3].imshow(ov3, alpha=0.4)
+                title = "V2 Final"
+                if res["used_fallback"]:
+                    title += " [fallback]"
+                if res.get("used_a1"):
+                    title += " [A1]"
+                if "dice" in res:
+                    title += f"\nDice={res['dice']:.4f}"
+                axes[3].set_title(title, fontsize=9); axes[3].axis("off")
+
+                plt.tight_layout()
+                plt.savefig(os.path.join(save_dir, filename), dpi=80)
+                plt.close()
 
             mask_uint8 = (res["pred_final"] * 255).astype(np.uint8)
             Image.fromarray(mask_uint8, mode="L").save(os.path.join(mask_dir, filename))
@@ -274,7 +352,9 @@ def main():
             print(f"Error: {item['image']}: {e}")
             traceback.print_exc()
 
-    print(f"\nFallback used: {fallback_count} / {len(target_files)}")
+    print(f"\nEmpty-student fallback used: {fallback_count} / {len(target_files)}")
+    if args.enable_a1:
+        print(f"A1 fallback used: {a1_count} / {len(target_files)}")
 
     if results_stats:
         df = pd.DataFrame(results_stats)
