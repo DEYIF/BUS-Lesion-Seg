@@ -1,14 +1,24 @@
 """
-Visualize bad cases (Dice < threshold) for UNet and SAM3 models side-by-side.
+Visualize bad cases (Dice < threshold) and categorize their failure modes.
 
-Output: BUS-Lesion-Seg/Experiments/bad_case_analysis/
-  - per_case/<filename>.png  -- 5-panel: Image | GT | UNet | SAM3 | Sandwich
-  - summary_unet_bad.png     -- grid of cases where UNet fails
-  - summary_sam3_bad.png     -- grid of cases where SAM3 fails
-  - bad_cases_report.txt     -- text analysis with failure categories
+Categories (the first three are mutually exclusive on U-Net x SAM_LoRA;
+v2_regression is orthogonal and may overlap with none of them by construction):
+  - both_bad       : U-Net and SAM_LoRA both fail
+  - only_unet_bad  : U-Net fails, SAM_LoRA succeeds
+  - only_sam3_bad  : SAM_LoRA fails, U-Net succeeds
+  - v2_regression  : both U-Net and SAM_LoRA succeed but Sandwich V2 fails
+                     (Sandwich V2 retreats from baselines)
+
+Output: BUS-Lesion-Seg/Experiments/bad_case_analysis_v2_dice<NN>/
+  - per_case/<filename>.png      -- 6-panel: Image | GT | U-Net | SAM_LoRA | V1 | V2
+  - summary_both_bad.png         -- grid of both_bad cases
+  - summary_only_unet_bad.png    -- grid of only_unet_bad cases
+  - summary_only_sam3_bad.png    -- grid of only_sam3_bad cases
+  - summary_v2_regression.png    -- grid of V2 regression cases
+  - bad_cases_report.txt         -- text report with counts and fix rates
 
 Usage:
-  conda run -n sam3 python scripts/visualize_bad_cases.py [--threshold 0.3]
+  /home/maia-user/yufeng/envs/sam3/bin/python scripts/visualize_bad_cases.py [--threshold 0.8]
 """
 
 import csv
@@ -179,8 +189,8 @@ def make_summary_grid(rows, title, out_path, cols=3):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--threshold", type=float, default=0.7,
-                        help="Dice threshold for 'bad case' (default: 0.7)")
+    parser.add_argument("--threshold", type=float, default=0.8,
+                        help="Dice threshold for 'bad case' (default: 0.8)")
     parser.add_argument("--out_suffix", type=str, default=None,
                         help="Override OUT_DIR suffix. Default: bad_case_analysis_v2_dice<int(threshold*10)>")
     args = parser.parse_args()
@@ -206,35 +216,48 @@ def main():
 
     unet_metrics = metrics_per_model["U-Net"]
     sam3_metrics = metrics_per_model["SAM LoRA"]
+    v2_metrics   = metrics_per_model.get("Sandwich V2", {})
 
     all_filenames = set(unet_metrics.keys())
 
-    # Categorize bad cases
+    # Categorize bad cases.
+    # The first three are mutually exclusive (U-Net x SAM_LoRA joint categorization).
+    # `v2_regression` is an ORTHOGONAL category: cases where both baselines succeed
+    # (DSC >= threshold) but Sandwich V2 itself fails (DSC < threshold). It can overlap
+    # with none of the first three categories by construction.
     categories = {
-        "both_bad":        [],  # both UNet and SAM3 fail
-        "only_unet_bad":   [],  # UNet fails, SAM3 OK
-        "only_sam3_bad":   [],  # SAM3 fails, UNet OK
-        "empty_gt":        [],  # GT has no lesion (annotation edge case)
+        "both_bad":      [],  # both UNet and SAM_LoRA fail
+        "only_unet_bad": [],  # UNet fails, SAM_LoRA OK
+        "only_sam3_bad": [],  # SAM_LoRA fails, UNet OK
+        "v2_regression": [],  # both baselines OK but Sandwich V2 fails (orthogonal)
     }
 
     for fname in sorted(all_filenames):
         dataset, unet_dice, _ = unet_metrics[fname]
         sam3_entry = sam3_metrics.get(fname)
         sam3_dice  = sam3_entry[1] if sam3_entry else None
+        v2_entry   = v2_metrics.get(fname) if v2_metrics else None
+        v2_dice    = v2_entry[1] if v2_entry else None
 
-        # Check if GT is empty
+        # Skip empty-GT annotation artifacts (not a real bad case)
         label_path = os.path.join(DATA_DIR, "labels", fname)
         label_arr  = np.array(Image.open(label_path).convert("L")) if os.path.exists(label_path) else None
         gt_empty   = (label_arr is not None and label_arr.max() == 0)
-
         if gt_empty:
-            categories["empty_gt"].append(fname)
-        elif unet_dice < threshold and (sam3_dice is None or sam3_dice < threshold):
+            continue
+
+        # Mutually exclusive U-Net x SAM_LoRA categorization
+        if unet_dice < threshold and (sam3_dice is None or sam3_dice < threshold):
             categories["both_bad"].append(fname)
         elif unet_dice < threshold and sam3_dice >= threshold:
             categories["only_unet_bad"].append(fname)
         elif unet_dice >= threshold and sam3_dice is not None and sam3_dice < threshold:
             categories["only_sam3_bad"].append(fname)
+
+        # Orthogonal: V2 regression cases (both baselines succeed but V2 fails)
+        if (unet_dice >= threshold and sam3_dice is not None and sam3_dice >= threshold
+                and v2_dice is not None and v2_dice < threshold):
+            categories["v2_regression"].append(fname)
 
     # ── per-case panels ────────────────────────────────────────────────────
     bad_files = set()
@@ -256,23 +279,23 @@ def main():
 
     make_summary_grid(
         collect_panels(categories["both_bad"]),
-        f"Both UNet & SAM3 fail (Dice < {threshold})",
+        f"Both UNet & SAM_LoRA fail (Dice < {threshold})",
         os.path.join(OUT_DIR, "summary_both_bad.png"),
     )
     make_summary_grid(
         collect_panels(categories["only_unet_bad"]),
-        f"Only UNet fails (Dice < {threshold}), SAM3 succeeds",
+        f"Only UNet fails (Dice < {threshold}), SAM_LoRA succeeds",
         os.path.join(OUT_DIR, "summary_only_unet_bad.png"),
     )
     make_summary_grid(
         collect_panels(categories["only_sam3_bad"]),
-        f"Only SAM3 fails (Dice < {threshold}), UNet succeeds",
+        f"Only SAM_LoRA fails (Dice < {threshold}), UNet succeeds",
         os.path.join(OUT_DIR, "summary_only_sam3_bad.png"),
     )
     make_summary_grid(
-        collect_panels(categories["empty_gt"]),
-        "Empty GT mask (no lesion annotated)",
-        os.path.join(OUT_DIR, "summary_empty_gt.png"),
+        collect_panels(categories["v2_regression"]),
+        f"Sandwich V2 regression: both baselines succeed but V2 fails (Dice < {threshold})",
+        os.path.join(OUT_DIR, "summary_v2_regression.png"),
     )
 
     # ── text report ───────────────────────────────────────────────────────
@@ -307,6 +330,19 @@ def main():
                     fixed = sum(1 for fn in fnames if mm.get(fn) and mm[fn][1] >= threshold)
                     parts.append(f"{lab} {fixed}/{len(fnames)}")
                 f.write("  " + " | ".join(parts) + "\n")
+            f.write("\n")
+
+        # ── V2 regression analysis (both baselines OK but V2 fails) ────
+        v2_reg = categories.get("v2_regression", [])
+        if v2_reg:
+            v1_mm = metrics_per_model.get("Sandwich V1", {})
+            v1_also_fail = sum(1 for fn in v2_reg
+                               if v1_mm.get(fn) and v1_mm[fn][1] < threshold)
+            v1_ok        = len(v2_reg) - v1_also_fail
+            f.write("── SANDWICH V2 REGRESSION ANALYSIS ──\n")
+            f.write(f"  Total v2_regression cases: {len(v2_reg)} (both baselines OK but V2 fails)\n")
+            f.write(f"  V1 also fails on: {v1_also_fail}/{len(v2_reg)}  (cascade-level regression)\n")
+            f.write(f"  V1 succeeds on:   {v1_ok}/{len(v2_reg)}  (V2-specific regression vs V1)\n")
             f.write("\n")
 
         for cat_name, fnames in categories.items():
