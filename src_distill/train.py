@@ -59,6 +59,10 @@ def main():
     parser.add_argument("--no_distillation", dest='use_distillation', action='store_false', help="Explicitly disable distillation (Baseline mode)")
     parser.add_argument("--finetune_type", type=str, default="lora", choices=["lora", "full"], help="Fine-tuning strategy: 'lora' or 'full'")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint if it exists.")
+    parser.add_argument("--dice_weight", type=float, default=1.0, help="Weight for Dice loss in segmentation supervision")
+    parser.add_argument("--bce_weight", type=float, default=1.0, help="Weight for BCE loss in segmentation supervision")
+    parser.add_argument("--exp_tag", type=str, default="", help="Optional experiment tag; checkpoints saved to checkpoints/<exp_tag>/")
+    parser.add_argument("--data_root", type=str, default="", help="Override Config.DATA_ROOT (e.g. /home/maia-user/yufeng/Data/BUS_Mix_Seg)")
     parser.set_defaults(use_distillation=True) # Default is Distillation
     
     args = parser.parse_args()
@@ -74,7 +78,12 @@ def main():
     use_lora = (args.finetune_type == "lora")
     model = DistillModel(teacher_ckpt, base_sam_ckpt, use_lora=use_lora).cuda()
     
-    criterion = DistillationLoss(alpha=2.0).cuda()
+    criterion = DistillationLoss(
+        alpha=2.0,
+        dice_weight=args.dice_weight,
+        bce_weight=args.bce_weight,
+    ).cuda()
+    print(f"📐 Loss weights: dice={args.dice_weight}, bce={args.bce_weight}")
     
     # Optimizer: Only train student mask decoder
     optimizer = torch.optim.Adam(
@@ -85,15 +94,22 @@ def main():
     print("📂 Loading Data...")
     from src_unet.config import Config
     Config.BATCH_SIZE = args.batch_size
-    train_loader, val_loader = get_dataloaders() 
+    if args.data_root:
+        Config.DATA_ROOT = args.data_root
+        print(f"📁 Override DATA_ROOT -> {Config.DATA_ROOT}")
+    train_loader, val_loader = get_dataloaders()
 
     # Handle Checkpoint Paths
+    ckpt_root = "/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints"
+    ckpt_dir = os.path.join(ckpt_root, args.exp_tag) if args.exp_tag else ckpt_root
+    os.makedirs(ckpt_dir, exist_ok=True)
+
     save_name_prefix = "student_sam3_distilled" if args.use_distillation else "student_sam3_gtonly"
     save_name = f"{save_name_prefix}_{args.finetune_type}.pth"
     latest_save_name = f"{save_name_prefix}_{args.finetune_type}_latest.pth"
-    
-    save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{save_name}"
-    latest_save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{latest_save_name}"
+
+    save_path = os.path.join(ckpt_dir, save_name)
+    latest_save_path = os.path.join(ckpt_dir, latest_save_name)
 
     # Resume Logic
     start_epoch = 0
@@ -161,14 +177,8 @@ def main():
         print(f"Epoch {epoch+1} finished. Avg Loss: {epoch_loss/len(train_loader):.4f}")
         
         # Save Model dynamically based on mode (Saved every epoch)
-        save_name_prefix = "student_sam3_distilled" if args.use_distillation else "student_sam3_gtonly"
-        save_name = f"{save_name_prefix}_{args.finetune_type}.pth"
-        latest_save_name = f"{save_name_prefix}_{args.finetune_type}_latest.pth"
-        
-        save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{save_name}"
-        latest_save_path = f"/home/maia-user/yufeng/BUS-Lesion-Seg/checkpoints/{latest_save_name}"
-        
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        # ckpt_dir / save_name_prefix / save_name / latest_save_name 已在循环外初始化
+        os.makedirs(ckpt_dir, exist_ok=True)
         if use_lora:
             state_dict_to_save = {k: v.cpu() for k, v in model.student.named_parameters() if v.requires_grad}
         else:
@@ -188,6 +198,13 @@ def main():
         # 保存主干权重
         torch.save(cp_dict, save_path)
         print(f"💾 Model checkpoint saved to {save_path}")
+
+        # 每 10 epoch 额外保存一份带 epoch 号的快照
+        if (epoch + 1) % 10 == 0:
+            snapshot_name = f"{save_name_prefix}_{args.finetune_type}_ep{epoch+1}.pth"
+            snapshot_path = os.path.join(ckpt_dir, snapshot_name)
+            torch.save(cp_dict, snapshot_path)
+            print(f"📌 Snapshot saved to {snapshot_path}")
 
 if __name__ == "__main__":
     main()

@@ -4,11 +4,14 @@ import torch.nn.functional as F
 import segmentation_models_pytorch as smp
 
 class DistillationLoss(nn.Module):
-    def __init__(self, alpha=0.5, temperature=1.0):
+    def __init__(self, alpha=0.5, temperature=1.0,
+                 dice_weight=1.0, bce_weight=1.0):
         super().__init__()
         self.alpha = alpha # 蒸馏权重的比例
         self.T = temperature
-        
+        self.dice_weight = dice_weight
+        self.bce_weight = bce_weight
+
         # 1. 硬 Loss: Student vs Ground Truth
         self.seg_loss = smp.losses.DiceLoss(mode="binary", from_logits=True)
         self.bce_loss = nn.BCEWithLogitsLoss()
@@ -27,8 +30,8 @@ class DistillationLoss(nn.Module):
         """
         # A. 分割任务损失 (让 SAM 学会对 - 此时对比 GT)
         # Seg Loss 始终计算
-        l_seg = self.seg_loss(student_logits, gt_masks) + \
-                self.bce_loss(student_logits, gt_masks)
+        l_seg = self.dice_weight * self.seg_loss(student_logits, gt_masks) + \
+                self.bce_weight * self.bce_loss(student_logits, gt_masks)
         
         # B. 蒸馏损失 (让 SAM 学得像 Teacher - 仅在 Teacher 自信区域)
         if teacher_logits is not None:

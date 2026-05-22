@@ -10,11 +10,8 @@ from pathlib import Path
 from PIL import Image
 import torch.nn.functional as F
 
-# MONAI 组件
-from monai.transforms import (
-    Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityd, 
-    Resized, EnsureTyped, Lambdad
-)
+# MONAI 组件（仅保留必要部分）
+from monai.transforms import Compose
 
 # 导入配置 (注意：假设你在根目录运行，使用 src_unet 包名)
 try:
@@ -25,81 +22,49 @@ except ImportError:
 
 class UnetInferencer:
     def __init__(self, checkpoint_path, device=None):
-        self.device = device if device else Config.DEVICE
+        if device:
+            self.device = device
+        else:
+            cfg_device = Config.DEVICE
+            if cfg_device == "cuda" and not torch.cuda.is_available():
+                print("⚠️  Config.DEVICE='cuda' 但 CUDA 不可用，已自动切换到 CPU")
+                self.device = "cpu"
+            else:
+                self.device = cfg_device
         print(f"🚀 正在加载模型到 {self.device} ...")
-        
+
         # 1. 加载模型
         self.model = smp.Unet(
             encoder_name=Config.MODEL_ARCH,
-            encoder_weights=None, 
+            encoder_weights=None,
             in_channels=3,
             classes=1,
         )
-        
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)
         self.model.eval()
         
-        # 2. 定义预处理管线
-        # 技巧：我们定义两套管线，或者利用 allow_missing_keys (但分开写更清晰)
-        
-        # 管线 A: 有 Label 的情况 (Eval Mode)
-        self.transforms_with_label = Compose([
-            LoadImaged(keys=["image", "label"], image_only=False, reverse_indexing=False),
-            # EnsureChannelFirstd(keys=["image"], channel_dim=-1),
-            Lambdad(keys=["image"], func=self.force_rgb_cfirst),
-            EnsureChannelFirstd(keys=["label"], channel_dim="no_channel"),
-            ScaleIntensityd(keys=["image", "label"]), 
-            Resized(keys=["image", "label"], spatial_size=Config.IMAGE_SIZE, mode=["bilinear", "nearest"]),
-            EnsureTyped(keys=["image", "label"])
-        ])
-        
-        self.transforms_image_only = Compose([
-            LoadImaged(keys=["image"], image_only=False, reverse_indexing=False),
-            
-            # 1. 强制转为 (3, H, W)
-            Lambdad(keys=["image"], func=self.force_rgb_cfirst),
-            
-            # 2. 归一化 (0-1)
-            ScaleIntensityd(keys=["image"]),
-            
-            # 3. Resize
-            Resized(keys=["image"], spatial_size=Config.IMAGE_SIZE, mode="bilinear"),
-            
-            EnsureTyped(keys=["image"])
-        ])
+        # 预处理尺寸 (H, W)
+        self.img_size = Config.IMAGE_SIZE  # e.g. (512, 512)
 
-    def force_rgb_cfirst(self, img):
-        """
-        将任意维度的图片 (H, W) 或 (H, W, C) 或 (C, H, W)
-        强制转换为 (3, H, W) 格式，适配模型输入。
-        """
-        # 确保是 numpy 数组
-        if isinstance(img, torch.Tensor):
-            img = img.detach().cpu().numpy()
-            
-        # 情况 1: 纯 2D 灰度图 (H, W) -> (1, H, W)
-        if img.ndim == 2:
-            img = img[np.newaxis, ...]
-            
-        # 情况 2: (H, W, C) -> (C, H, W)
-        # 判据：最后一个维度小于等于 4 (比如 1, 3, 4)，通常是 Channel
-        elif img.ndim == 3 and img.shape[-1] <= 4:
-            img = np.transpose(img, (2, 0, 1))
-            
-        # 此时 img 必定是 (C, H, W)
-        C, H, W = img.shape
-        
-        # 修正通道数: 如果是 1 通道 (灰度)，复制为 3 通道 (RGB)
-        if C == 1:
-            img = np.repeat(img, 3, axis=0)
-        elif C > 3:
-            # 如果是 RGBA (4通道)，只取前 3 个
-            img = img[:3, ...]
-            
-        return img
+    def preprocess_image(self, image_path):
+        """用 PIL 加载图像并预处理为 (3, H, W) float tensor，归一化到 [0,1]。"""
+        H, W = self.img_size
+        img = Image.open(image_path).convert('RGB')        # 统一为 3 通道 RGB
+        img = img.resize((W, H), Image.BILINEAR)           # PIL.resize 参数为 (W, H)
+        arr = np.array(img, dtype=np.float32) / 255.0      # (H, W, 3)，归一化
+        return torch.from_numpy(arr).permute(2, 0, 1)      # (3, H, W)
+
+    def preprocess_label(self, label_path):
+        """用 PIL 加载标签并预处理为 (1, H, W) float tensor，值为 0 或 1。"""
+        H, W = self.img_size
+        lbl = Image.open(label_path).convert('L')          # 灰度
+        lbl = lbl.resize((W, H), Image.NEAREST)            # 最近邻，保持二值边界
+        arr = (np.array(lbl, dtype=np.float32) > 0).astype(np.float32)  # 0/255 -> 0/1
+        return torch.from_numpy(arr).unsqueeze(0)          # (1, H, W)
 
     def compute_dice(self, pred, gt):
         smooth = 1e-5
@@ -117,31 +82,17 @@ class UnetInferencer:
         核心处理函数：推理并还原回原始尺寸
         """
         has_label = data_item.get("label") is not None
-        
-        # 1. 预处理 (Resize 到 512x512)
+
+        # 获取原始尺寸和 DPI（PIL.Image.size 返回 (W, H)）
+        with Image.open(data_item["image"]) as _img:
+            orig_w, orig_h = _img.size
+            orig_dpi = _img.info.get("dpi", None)  # 用于保存 mask 时保持 DPI 一致
+
+        # 1. 预处理（PIL → tensor，resize 到 512×512）
+        img_tensor_512 = self.preprocess_image(data_item["image"]).unsqueeze(0).to(self.device)
+        gt_tensor_512 = None
         if has_label:
-            data = self.transforms_with_label(data_item)
-            gt_tensor_512 = data["label"].unsqueeze(0).to(self.device)
-        else:
-            temp_item = {"image": data_item["image"]}
-            data = self.transforms_image_only(temp_item)
-            gt_tensor_512 = None
-
-        img_tensor_512 = data["image"].unsqueeze(0).to(self.device)
-
-        # === ✨ 关键步骤 1: 获取原始尺寸 ===
-        # MONAI 会将原始信息存在 image_meta_dict 中
-        # 注意：spatial_shape 可能是 tensor 或 list，需要转为 tuple
-        # spatial_shape 通常是 [H, W] (因为你已经修复了读取顺序)
-        if "image_meta_dict" in data:
-            meta = data["image_meta_dict"]
-            # 兼容性处理：有时候是 'spatial_shape'，有时候是 'dim'
-            orig_size = meta.get("spatial_shape", meta.get("dim", None))
-            # 确保只取前两个维度 (H, W)
-            orig_h, orig_w = int(orig_size[1]), int(orig_size[0])
-        else:
-            # 如果万一没有 meta，就退化为当前尺寸
-            orig_h, orig_w = img_tensor_512.shape[2], img_tensor_512.shape[3]
+            gt_tensor_512 = self.preprocess_label(data_item["label"]).unsqueeze(0).to(self.device)
 
         # 2. 模型推理 (在 512x512 上进行)
         with torch.no_grad():
@@ -181,7 +132,8 @@ class UnetInferencer:
             "image": img_np,
             "pred": pred_np,
             "has_label": has_label,
-            "filename": os.path.basename(data_item["image"])
+            "filename": os.path.basename(data_item["image"]),
+            "dpi": orig_dpi,
         }
 
         # 4. 如果有 Label，计算指标
@@ -214,20 +166,18 @@ class UnetInferencer:
             
         return result
 
-    def save_prediction_mask(self, pred_np, save_path):
+    def save_prediction_mask(self, pred_np, save_path, dpi=None):
         """
         保存纯净的二值化 Mask
         pred_np: 0 或 1 的 numpy 数组 (float 或 int)
+        dpi: 原图的 DPI 元数据，保持一致以便在 PPT 等软件中叠放时尺寸对齐
         """
-        # 1. 将 0/1 映射到 0/255
-        # 乘 255 后，0还是0(黑)，1变成255(白)
         mask_uint8 = (pred_np * 255).astype(np.uint8)
-        
-        # 2. 转换为 PIL Image 对象 (模式 'L' 表示灰度)
         img = Image.fromarray(mask_uint8, mode='L')
-        
-        # 3. 保存
-        img.save(save_path)
+        save_kwargs = {}
+        if dpi is not None:
+            save_kwargs["dpi"] = dpi
+        img.save(save_path, **save_kwargs)
 
     def visualize(self, res, save_dir):
         """
@@ -313,13 +263,20 @@ def scan_inference_files(root_dir):
     return data_list
 
 def main():
-    # === 配置区 ===
-    # 你的模型路径
-    CHECKPOINT = os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet_BUSC_BUID_UDIAT_BUSUC.pth")
-    # 想要推理的数据根目录 (可以是训练时的 Data 目录，也可以是新的未标注数据目录)
-    # 只要该目录下有 images 文件夹即可
-    INFERENCE_ROOT = Config.DATA_ROOT
-    OUTPUT_DIR = Config.OUTPUT_DIR
+    import argparse
+    parser = argparse.ArgumentParser(description="UNet 推理脚本")
+    parser.add_argument("--data-root", type=str, default=Config.DATA_ROOT,
+                        help="数据根目录，需包含 images/ 子文件夹（默认: Config.DATA_ROOT）")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="输出目录（默认: <data-root>/masks_inference）")
+    parser.add_argument("--checkpoint", type=str,
+                        default=os.path.join(Config.CHECKPOINT_DIR, "best_teacher_unet_BUSC_BUID_UDIAT_BUSUC.pth"),
+                        help="模型权重路径")
+    args = parser.parse_args()
+
+    CHECKPOINT = args.checkpoint
+    INFERENCE_ROOT = args.data_root
+    OUTPUT_DIR = args.output_dir if args.output_dir else os.path.join(INFERENCE_ROOT, "masks_inference")
     TEST_DATASETS = Config.EXTERNAL_TEST_DATASETS  # 只推理这些数据集的样本，设为 None 则推理全部
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -363,7 +320,7 @@ def main():
         inferencer.visualize(res, overlay_dir)
 
         mask_save_path = os.path.join(mask_dir, filename)
-        inferencer.save_prediction_mask(res['pred'], mask_save_path)
+        inferencer.save_prediction_mask(res['pred'], mask_save_path, dpi=res.get('dpi'))
         
         # 只有当计算了指标时，才记录到统计表
         if res['has_label']:

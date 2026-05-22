@@ -44,18 +44,18 @@ EXPECTED_OVERALL_DSC = {
 
 DATASETS = ["BUID", "BUSC", "BUSUC", "UDIAT"]
 
-PANEL_W = PANEL_H = 320
-COL_HEADER_H = 40
-ROW_HEADER_W = 90
-DICE_STRIP_H = 26
-GUTTER = 4
+PANEL_W = PANEL_H = 340
+COL_HEADER_H = 58
+ROW_HEADER_W = 110
+DICE_STRIP_H = 40
+GUTTER = 5
 
 BG = (255, 255, 255)
 TEXT = (20, 20, 20)
 GT_COLOR = (60, 160, 60)
-GT_CONTOUR = (60, 120, 60)
+GT_CONTOUR = (255, 200, 0)
 PRED_COLOR = (220, 60, 60)
-PRED_CONTOUR = (180, 30, 30)
+PRED_CONTOUR = (255, 200, 0)
 ALPHA = 0.40
 
 
@@ -162,8 +162,11 @@ def resize_to(arr, w, h):
 
 def try_font(size):
     for path in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman_Bold.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/timesbd.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
     ]:
         if os.path.exists(path):
             return ImageFont.truetype(path, size)
@@ -189,9 +192,9 @@ def render_figure(samples, out_path):
 
     canvas = Image.new("RGB", (canvas_w, canvas_h), BG)
     draw = ImageDraw.Draw(canvas)
-    font_col = try_font(20)
-    font_row = try_font(20)
-    font_dice = try_font(20)
+    font_col = try_font(40)
+    font_row = try_font(32)
+    font_dice = try_font(40)
 
     # Column headers
     for j, name in enumerate(col_names):
@@ -211,7 +214,7 @@ def render_figure(samples, out_path):
 
         gt_vis = overlay_mask(img_arr, gt_arr, GT_COLOR, GT_CONTOUR)
 
-        cells = [(img_arr, ""), (gt_vis, "GT")]
+        cells = [(img_arr, ""), (gt_vis, "")]
         for model_name, exp_dir in MODELS.items():
             mask_path = os.path.join(exp_dir, ds, "masks", fname)
             if os.path.exists(mask_path):

@@ -10,6 +10,7 @@ Changes vs model.py:
      where unet1_mask_binary is only used internally for bbox generation.
 """
 
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,8 +21,49 @@ from src_unet.model import build_unet
 from sam3.model_builder import build_sam3_image_model
 
 
+def _merge_lora_into_sam_decoder(sam, lora_state_dict, r=8, lora_alpha=16):
+    """Merge PEFT-style LoRA weights into SAM decoder linear1/linear2 in-place.
+
+    Expects keys like:
+        transformer.decoder.base_model.model.layers.{i}.{linear1|linear2}.lora_{A|B}.default.weight
+
+    For each target linear layer, performs:
+        W <- W + (alpha / r) * (lora_B @ lora_A)
+
+    This avoids a runtime dependency on the peft library — SAM is frozen in the
+    Sandwich pipeline, so a one-shot merge is equivalent to keeping adapters active.
+    """
+    scaling = lora_alpha / r
+    pat = re.compile(
+        r"^transformer\.decoder\.base_model\.model\.layers\.(\d+)\."
+        r"(linear1|linear2)\.lora_(A|B)\.default\.weight$"
+    )
+    pairs = {}  # (layer_idx, linear_name) -> dict with 'A', 'B'
+    for k, v in lora_state_dict.items():
+        m = pat.match(k)
+        if not m:
+            raise RuntimeError(f"Unexpected key in LoRA ckpt: {k}")
+        idx, lin, ab = int(m.group(1)), m.group(2), m.group(3)
+        pairs.setdefault((idx, lin), {})[ab] = v
+
+    decoder_layers = sam.transformer.decoder.layers
+    merged = 0
+    for (idx, lin), mats in pairs.items():
+        if "A" not in mats or "B" not in mats:
+            raise RuntimeError(f"Incomplete LoRA pair at layer {idx} {lin}: {list(mats)}")
+        A = mats["A"]  # (r, in)
+        B = mats["B"]  # (out, r)
+        delta = scaling * (B.to(torch.float32) @ A.to(torch.float32))  # (out, in)
+        target = getattr(decoder_layers[idx], lin)
+        with torch.no_grad():
+            target.weight.add_(delta.to(target.weight.dtype).to(target.weight.device))
+        merged += 1
+    return merged
+
+
 class SandwichModelV2(nn.Module):
-    def __init__(self, unet1_ckpt, sam_ckpt, unet2_arch="resnet34", unet2_weights="imagenet"):
+    def __init__(self, unet1_ckpt, sam_ckpt, unet2_arch="resnet34",
+                 unet2_weights="imagenet", sam_lora_ckpt=None):
         super().__init__()
 
         # === Stage 1: U-Net Teacher (Frozen) ===
@@ -34,7 +76,7 @@ class SandwichModelV2(nn.Module):
         for p in self.unet1.parameters():
             p.requires_grad = False
 
-        # === Stage 2: SAM 3 (Frozen) ===
+        # === Stage 2: SAM 3 (Frozen, optionally LoRA-adapted) ===
         print(f"V2 Layer 2: Loading SAM 3 (Frozen) from {sam_ckpt}...")
         self.sam = build_sam3_image_model(
             checkpoint_path=sam_ckpt,
@@ -42,6 +84,17 @@ class SandwichModelV2(nn.Module):
             eval_mode=True,
             enable_inst_interactivity=False
         )
+
+        if sam_lora_ckpt is not None:
+            print(f"V2 Layer 2: Merging LoRA weights from {sam_lora_ckpt} "
+                  f"into SAM decoder (r=8, alpha=16, linear1+linear2)...")
+            lora_ckpt = torch.load(sam_lora_ckpt, map_location='cpu', weights_only=False)
+            lora_sd = lora_ckpt['model_state_dict'] if isinstance(lora_ckpt, dict) \
+                      and 'model_state_dict' in lora_ckpt else lora_ckpt
+            n_merged = _merge_lora_into_sam_decoder(self.sam, lora_sd, r=8, lora_alpha=16)
+            print(f"V2 Layer 2: merged {n_merged} LoRA adapter pairs "
+                  f"(expected 12 = 6 decoder layers × 2 FFN linears).")
+
         for p in self.sam.parameters():
             p.requires_grad = False
 

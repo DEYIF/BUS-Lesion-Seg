@@ -1,0 +1,113 @@
+Bad Case Analysis  (threshold = Dice < 0.5)
+============================================================
+
+Bad case counts per model:
+  UNet        :  37 / 1456
+  SAM3        :  71 / 1456
+  SAM3-KD     :  66 / 1456
+  Sandwich    :  53 / 1456
+  Sandwich-V2 :  30 / 1456
+
+── V2 IMPROVEMENT VERIFICATION ──
+  only_unet_bad     : Sandwich-orig fixed 10/19, Sandwich-V2 fixed 7/19
+  both_bad          : Sandwich-orig fixed 3/17, Sandwich-V2 fixed 2/17
+  only_sam3_bad     : Sandwich-orig fixed 46/53, Sandwich-V2 fixed 53/53
+
+── BOTH_BAD (17 cases) ──
+  BUID    BUID_40_Malignant.png                UNet=0.496  SAM3=0.228  SAM3-KD=0.278  Sandwich=0.686  Sandwich-V2=0.500  GT_area=37.4%
+  BUSUC   BUSUC_0249.png                       UNet=0.094  SAM3=0.149  SAM3-KD=0.128  Sandwich=0.081  Sandwich-V2=0.090  GT_area=1.4%
+  BUSUC   BUSUC_0250.png                       UNet=0.078  SAM3=0.139  SAM3-KD=0.094  Sandwich=0.088  Sandwich-V2=0.081  GT_area=1.4%
+  BUSUC   BUSUC_052.png                        UNet=0.293  SAM3=0.393  SAM3-KD=0.324  Sandwich=0.916  Sandwich-V2=0.304  GT_area=3.4%
+  BUSUC   BUSUC_056.png                        UNet=0.103  SAM3=0.353  SAM3-KD=0.197  Sandwich=0.097  Sandwich-V2=0.099  GT_area=1.4%
+  UDIAT   UDIAT_000017.png                     UNet=0.000  SAM3=0.000  SAM3-KD=0.000  Sandwich=0.000  Sandwich-V2=0.000  GT_area=0.4%  [UNet: FALSE NEGATIVE]
+  UDIAT   UDIAT_000034.png                     UNet=0.431  SAM3=0.336  SAM3-KD=0.160  Sandwich=0.311  Sandwich-V2=0.392  GT_area=0.4%
+  UDIAT   UDIAT_000046.png                     UNet=0.000  SAM3=0.005  SAM3-KD=0.855  Sandwich=0.357  Sandwich-V2=0.000  GT_area=1.2%  [UNet: FALSE NEGATIVE]
+  UDIAT   UDIAT_000048.png                     UNet=0.000  SAM3=0.000  SAM3-KD=0.088  Sandwich=0.000  Sandwich-V2=0.000  GT_area=0.3%  [UNet: FALSE NEGATIVE]
+  UDIAT   UDIAT_000049.png                     UNet=0.324  SAM3=0.307  SAM3-KD=0.343  Sandwich=0.316  Sandwich-V2=0.310  GT_area=34.6%
+  UDIAT   UDIAT_000079.png                     UNet=0.386  SAM3=0.258  SAM3-KD=0.435  Sandwich=0.232  Sandwich-V2=0.619  GT_area=1.3%
+  UDIAT   UDIAT_000092.png                     UNet=0.000  SAM3=0.000  SAM3-KD=0.000  Sandwich=0.000  Sandwich-V2=0.000  GT_area=0.9%
+  UDIAT   UDIAT_000099.png                     UNet=0.000  SAM3=0.000  SAM3-KD=0.000  Sandwich=0.000  Sandwich-V2=0.000  GT_area=4.6%
+  UDIAT   UDIAT_000100.png                     UNet=0.495  SAM3=0.495  SAM3-KD=0.437  Sandwich=0.506  Sandwich-V2=0.520  GT_area=1.1%
+  UDIAT   UDIAT_000101.png                     UNet=0.000  SAM3=0.402  SAM3-KD=0.336  Sandwich=0.000  Sandwich-V2=0.000  GT_area=0.5%  [UNet: FALSE NEGATIVE]
+  UDIAT   UDIAT_000123.png                     UNet=0.345  SAM3=0.024  SAM3-KD=0.341  Sandwich=0.000  Sandwich-V2=0.379  GT_area=0.7%
+  UDIAT   UDIAT_000303.png                     UNet=0.000  SAM3=0.000  SAM3-KD=0.000  Sandwich=0.000  Sandwich-V2=0.000  GT_area=2.7%
+
+── ONLY_UNET_BAD (19 cases) ──
+  BUID    BUID_1_Malignant.png                 UNet=0.425  SAM3=0.544  SAM3-KD=0.703  Sandwich=0.369  Sandwich-V2=0.759  GT_area=4.0%
+  BUID    BUID_22_Benign.png                   UNet=0.000  SAM3=0.548  SAM3-KD=0.207  Sandwich=0.000  Sandwich-V2=0.467  GT_area=2.2%  [UNet: FALSE NEGATIVE]
+  BUID    BUID_24_Benign.png                   UNet=0.487  SAM3=0.601  SAM3-KD=0.615  Sandwich=0.808  Sandwich-V2=0.904  GT_area=4.7%
+  BUSC    BUSC_48.png                          UNet=0.484  SAM3=0.616  SAM3-KD=0.588  Sandwich=0.526  Sandwich-V2=0.516  GT_area=6.5%
+  BUSC    BUSC_49.png                          UNet=0.489  SAM3=0.550  SAM3-KD=0.537  Sandwich=0.483  Sandwich-V2=0.479  GT_area=6.6%
+  BUSUC   BUSUC_00156.png                      UNet=0.470  SAM3=0.601  SAM3-KD=0.717  Sandwich=0.829  Sandwich-V2=0.539  GT_area=6.1%
+  BUSUC   BUSUC_00167.png                      UNet=0.453  SAM3=0.820  SAM3-KD=0.597  Sandwich=0.726  Sandwich-V2=0.440  GT_area=1.8%
+  BUSUC   BUSUC_00171.png                      UNet=0.404  SAM3=0.562  SAM3-KD=0.517  Sandwich=0.628  Sandwich-V2=0.483  GT_area=2.3%
+  BUSUC   BUSUC_0022.png                       UNet=0.119  SAM3=0.667  SAM3-KD=0.385  Sandwich=0.679  Sandwich-V2=0.156  GT_area=0.7%
+  BUSUC   BUSUC_00403.png                      UNet=0.496  SAM3=0.523  SAM3-KD=0.483  Sandwich=0.491  Sandwich-V2=0.508  GT_area=8.5%
+  BUSUC   BUSUC_0082.png                       UNet=0.469  SAM3=0.869  SAM3-KD=0.793  Sandwich=0.751  Sandwich-V2=0.484  GT_area=7.6%
+  BUSUC   BUSUC_0102.png                       UNet=0.498  SAM3=0.646  SAM3-KD=0.887  Sandwich=0.830  Sandwich-V2=0.845  GT_area=0.9%
+  BUSUC   BUSUC_0238.png                       UNet=0.424  SAM3=0.626  SAM3-KD=0.505  Sandwich=0.879  Sandwich-V2=0.389  GT_area=2.7%
+  BUSUC   BUSUC_044.png                        UNet=0.395  SAM3=0.800  SAM3-KD=0.772  Sandwich=0.312  Sandwich-V2=0.393  GT_area=3.7%
+  BUSUC   BUSUC_075.png                        UNet=0.338  SAM3=0.609  SAM3-KD=0.464  Sandwich=0.477  Sandwich-V2=0.414  GT_area=4.7%
+  UDIAT   UDIAT_000010.png                     UNet=0.272  SAM3=0.656  SAM3-KD=0.227  Sandwich=0.291  Sandwich-V2=0.257  GT_area=0.6%
+  UDIAT   UDIAT_000019.png                     UNet=0.000  SAM3=0.876  SAM3-KD=0.733  Sandwich=0.000  Sandwich-V2=0.000  GT_area=0.3%  [UNet: FALSE NEGATIVE]
+  UDIAT   UDIAT_000135.png                     UNet=0.438  SAM3=0.851  SAM3-KD=0.705  Sandwich=0.697  Sandwich-V2=0.445  GT_area=2.9%
+  UDIAT   UDIAT_000296.png                     UNet=0.490  SAM3=0.656  SAM3-KD=0.556  Sandwich=0.323  Sandwich-V2=0.544  GT_area=1.1%
+
+── ONLY_SAM3_BAD (53 cases) ──
+  BUID    BUID_109_Malignant.png               UNet=0.928  SAM3=0.211  SAM3-KD=0.562  Sandwich=0.843  Sandwich-V2=0.948  GT_area=50.5%
+  BUID    BUID_114_Malignant.png               UNet=0.868  SAM3=0.470  SAM3-KD=0.564  Sandwich=0.887  Sandwich-V2=0.924  GT_area=17.7%
+  BUID    BUID_16_Malignant.png                UNet=0.917  SAM3=0.467  SAM3-KD=0.602  Sandwich=0.866  Sandwich-V2=0.924  GT_area=12.8%
+  BUID    BUID_34_Malignant.png                UNet=0.809  SAM3=0.099  SAM3-KD=0.109  Sandwich=0.438  Sandwich-V2=0.786  GT_area=3.7%
+  BUID    BUID_36_Malignant.png                UNet=0.923  SAM3=0.483  SAM3-KD=0.542  Sandwich=0.892  Sandwich-V2=0.944  GT_area=19.9%
+  BUID    BUID_37_Benign.png                   UNet=0.513  SAM3=0.195  SAM3-KD=0.357  Sandwich=0.706  Sandwich-V2=0.523  GT_area=3.8%
+  BUID    BUID_41_Malignant.png                UNet=0.645  SAM3=0.357  SAM3-KD=0.536  Sandwich=0.171  Sandwich-V2=0.933  GT_area=23.5%
+  BUID    BUID_44_Malignant.png                UNet=0.938  SAM3=0.277  SAM3-KD=0.481  Sandwich=0.932  Sandwich-V2=0.955  GT_area=18.8%
+  BUID    BUID_51_Malignant.png                UNet=0.621  SAM3=0.113  SAM3-KD=0.109  Sandwich=0.048  Sandwich-V2=0.921  GT_area=30.7%
+  BUID    BUID_66_Benign.png                   UNet=0.876  SAM3=0.252  SAM3-KD=0.438  Sandwich=0.856  Sandwich-V2=0.940  GT_area=51.3%
+  BUID    BUID_70_Malignant.png                UNet=0.908  SAM3=0.330  SAM3-KD=0.412  Sandwich=0.580  Sandwich-V2=0.944  GT_area=36.3%
+  BUID    BUID_72_Benign.png                   UNet=0.897  SAM3=0.233  SAM3-KD=0.344  Sandwich=0.892  Sandwich-V2=0.924  GT_area=15.8%
+  BUID    BUID_73_Malignant.png                UNet=0.842  SAM3=0.266  SAM3-KD=0.478  Sandwich=0.870  Sandwich-V2=0.832  GT_area=48.9%
+  BUID    BUID_74_Malignant.png                UNet=0.775  SAM3=0.484  SAM3-KD=0.599  Sandwich=0.754  Sandwich-V2=0.766  GT_area=50.1%
+  BUID    BUID_79_Malignant.png                UNet=0.767  SAM3=0.158  SAM3-KD=0.195  Sandwich=0.302  Sandwich-V2=0.805  GT_area=8.3%
+  BUID    BUID_80_Benign.png                   UNet=0.901  SAM3=0.285  SAM3-KD=0.402  Sandwich=0.813  Sandwich-V2=0.927  GT_area=42.2%
+  BUID    BUID_88_Benign.png                   UNet=0.905  SAM3=0.147  SAM3-KD=0.383  Sandwich=0.897  Sandwich-V2=0.948  GT_area=49.4%
+  BUID    BUID_90_Malignant.png                UNet=0.948  SAM3=0.060  SAM3-KD=0.197  Sandwich=0.923  Sandwich-V2=0.956  GT_area=32.4%
+  BUID    BUID_97_Malignant.png                UNet=0.842  SAM3=0.458  SAM3-KD=0.755  Sandwich=0.845  Sandwich-V2=0.925  GT_area=25.7%
+  BUSC    BUSC_176.png                         UNet=0.623  SAM3=0.487  SAM3-KD=0.619  Sandwich=0.724  Sandwich-V2=0.611  GT_area=1.9%
+  BUSC    BUSC_177.png                         UNet=0.618  SAM3=0.290  SAM3-KD=0.498  Sandwich=0.683  Sandwich-V2=0.623  GT_area=1.7%
+  BUSC    BUSC_178.png                         UNet=0.691  SAM3=0.422  SAM3-KD=0.553  Sandwich=0.695  Sandwich-V2=0.675  GT_area=1.6%
+  BUSC    BUSC_179.png                         UNet=0.746  SAM3=0.320  SAM3-KD=0.411  Sandwich=0.767  Sandwich-V2=0.752  GT_area=2.0%
+  BUSC    BUSC_180.png                         UNet=0.803  SAM3=0.266  SAM3-KD=0.488  Sandwich=0.807  Sandwich-V2=0.807  GT_area=2.0%
+  BUSC    BUSC_69.png                          UNet=0.737  SAM3=0.477  SAM3-KD=0.453  Sandwich=0.843  Sandwich-V2=0.711  GT_area=4.1%
+  BUSUC   BUSUC_00145.png                      UNet=0.714  SAM3=0.427  SAM3-KD=0.390  Sandwich=0.573  Sandwich-V2=0.732  GT_area=2.7%
+  BUSUC   BUSUC_00169.png                      UNet=0.864  SAM3=0.431  SAM3-KD=0.724  Sandwich=0.783  Sandwich-V2=0.878  GT_area=6.0%
+  BUSUC   BUSUC_00177.png                      UNet=0.887  SAM3=0.291  SAM3-KD=0.573  Sandwich=0.881  Sandwich-V2=0.884  GT_area=24.8%
+  BUSUC   BUSUC_00185.png                      UNet=0.701  SAM3=0.019  SAM3-KD=0.251  Sandwich=0.813  Sandwich-V2=0.815  GT_area=2.1%
+  BUSUC   BUSUC_00189.png                      UNet=0.852  SAM3=0.470  SAM3-KD=0.797  Sandwich=0.907  Sandwich-V2=0.866  GT_area=2.5%
+  BUSUC   BUSUC_0019.png                       UNet=0.802  SAM3=0.003  SAM3-KD=0.030  Sandwich=0.738  Sandwich-V2=0.816  GT_area=4.4%
+  BUSUC   BUSUC_00196.png                      UNet=0.921  SAM3=0.327  SAM3-KD=0.641  Sandwich=0.738  Sandwich-V2=0.915  GT_area=20.4%
+  BUSUC   BUSUC_00199.png                      UNet=0.964  SAM3=0.453  SAM3-KD=0.711  Sandwich=0.942  Sandwich-V2=0.956  GT_area=42.0%
+  BUSUC   BUSUC_00200.png                      UNet=0.939  SAM3=0.423  SAM3-KD=0.636  Sandwich=0.864  Sandwich-V2=0.938  GT_area=43.3%
+  BUSUC   BUSUC_00278.png                      UNet=0.743  SAM3=0.260  SAM3-KD=0.533  Sandwich=0.793  Sandwich-V2=0.712  GT_area=22.1%
+  BUSUC   BUSUC_0037.png                       UNet=0.609  SAM3=0.469  SAM3-KD=0.388  Sandwich=0.584  Sandwich-V2=0.920  GT_area=1.6%
+  BUSUC   BUSUC_0040.png                       UNet=0.935  SAM3=0.498  SAM3-KD=0.791  Sandwich=0.947  Sandwich-V2=0.939  GT_area=21.8%
+  BUSUC   BUSUC_00452.png                      UNet=0.926  SAM3=0.384  SAM3-KD=0.365  Sandwich=0.899  Sandwich-V2=0.947  GT_area=42.8%
+  BUSUC   BUSUC_00455.png                      UNet=0.832  SAM3=0.367  SAM3-KD=0.342  Sandwich=0.952  Sandwich-V2=0.868  GT_area=55.8%
+  BUSUC   BUSUC_00460.png                      UNet=0.928  SAM3=0.336  SAM3-KD=0.599  Sandwich=0.930  Sandwich-V2=0.928  GT_area=5.7%
+  BUSUC   BUSUC_0071.png                       UNet=0.962  SAM3=0.407  SAM3-KD=0.486  Sandwich=0.963  Sandwich-V2=0.974  GT_area=55.1%
+  BUSUC   BUSUC_0131.png                       UNet=0.941  SAM3=0.489  SAM3-KD=0.629  Sandwich=0.949  Sandwich-V2=0.943  GT_area=41.7%
+  BUSUC   BUSUC_025.png                        UNet=0.928  SAM3=0.476  SAM3-KD=0.866  Sandwich=0.905  Sandwich-V2=0.918  GT_area=17.2%
+  BUSUC   BUSUC_0274.png                       UNet=0.951  SAM3=0.275  SAM3-KD=0.777  Sandwich=0.950  Sandwich-V2=0.941  GT_area=8.4%
+  BUSUC   BUSUC_036.png                        UNet=0.956  SAM3=0.225  SAM3-KD=0.558  Sandwich=0.752  Sandwich-V2=0.956  GT_area=28.4%
+  BUSUC   BUSUC_076.png                        UNet=0.832  SAM3=0.417  SAM3-KD=0.392  Sandwich=0.493  Sandwich-V2=0.836  GT_area=5.4%
+  UDIAT   UDIAT_000014.png                     UNet=0.941  SAM3=0.135  SAM3-KD=0.576  Sandwich=0.941  Sandwich-V2=0.930  GT_area=12.7%
+  UDIAT   UDIAT_000038.png                     UNet=0.870  SAM3=0.466  SAM3-KD=0.740  Sandwich=0.892  Sandwich-V2=0.910  GT_area=0.8%
+  UDIAT   UDIAT_000105.png                     UNet=0.891  SAM3=0.454  SAM3-KD=0.292  Sandwich=0.901  Sandwich-V2=0.916  GT_area=0.7%
+  UDIAT   UDIAT_000107.png                     UNet=0.940  SAM3=0.285  SAM3-KD=0.376  Sandwich=0.915  Sandwich-V2=0.949  GT_area=3.3%
+  UDIAT   UDIAT_000112.png                     UNet=0.512  SAM3=0.376  SAM3-KD=0.223  Sandwich=0.136  Sandwich-V2=0.538  GT_area=0.7%
+  UDIAT   UDIAT_000140.png                     UNet=0.740  SAM3=0.426  SAM3-KD=0.395  Sandwich=0.544  Sandwich-V2=0.695  GT_area=1.7%
+  UDIAT   UDIAT_000146.png                     UNet=0.876  SAM3=0.019  SAM3-KD=0.007  Sandwich=0.000  Sandwich-V2=0.885  GT_area=1.9%
+
+── EMPTY_GT (1 cases) ──
+  BUSUC   BUSUC_00476.png                      UNet=0.000  SAM3=0.000  SAM3-KD=0.000  Sandwich=0.000  Sandwich-V2=0.000  GT_area=0.0%  [UNet: FALSE POSITIVE]
+

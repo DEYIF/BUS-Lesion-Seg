@@ -115,11 +115,17 @@ class SandwichV2Inferencer:
         u = pred.sum() + gt.sum() - i
         return (i + smooth) / (u + smooth)
 
-    def run_sample(self, data_item, a1_cfg=None):
+    def run_sample(self, data_item, a1_cfg=None, fallback_mode="legacy"):
         """
         a1_cfg: optional dict with keys
             v1_mask_dir, a1_v2_v1_ratio, a1_v1_min_area
         If provided AND the trigger fires, V2's final mask is replaced with V1's.
+        Only used when fallback_mode == "legacy".
+
+        fallback_mode:
+            "legacy" — empty student → UNet1 soft; A1 oversize → V1+LoRA mask (external).
+            "swap"   — empty student → SAM^LoRA binary; oversize vs SAM^LoRA → UNet1 soft.
+                       Fully self-contained: does not read external v1_mask_dir.
         """
         has_label = data_item.get("label") is not None
 
@@ -143,38 +149,66 @@ class SandwichV2Inferencer:
             unet2_logits, sam_soft, unet1_soft, unet1_mask = self.model(img_tensor_512)
             unet2_prob = torch.sigmoid(unet2_logits)
 
-        # ── Adaptive fallback (existing): empty student → UNet1 ────────────
-        student_empty = ((unet2_prob > 0.5).float().sum() == 0)
-        if student_empty:
-            final_prob_512 = unet1_soft    # fall back to UNet1
-            used_fallback  = True
-        else:
-            final_prob_512 = unet2_prob
-            used_fallback  = False
+        if fallback_mode == "legacy":
+            # ── Adaptive fallback (existing): empty student → UNet1 ────────────
+            student_empty = ((unet2_prob > 0.5).float().sum() == 0)
+            if student_empty:
+                final_prob_512 = unet1_soft    # fall back to UNet1
+                used_fallback  = True
+            else:
+                final_prob_512 = unet2_prob
+                used_fallback  = False
 
-        # ── A1 fallback: V2 area << V1+LoRA area → use V1 mask ─────────────
-        used_a1 = False
-        if a1_cfg is not None and not used_fallback:
-            ds_name  = data_item.get("dataset_name") or os.path.basename(data_item["image"]).split("_")[0]
-            filename = os.path.basename(data_item["image"])
-            v1_path  = os.path.join(a1_cfg["v1_mask_dir"], ds_name, "masks", filename)
-            if os.path.exists(v1_path):
-                v1_arr = np.array(Image.open(v1_path).convert("L"))
-                if v1_arr.shape != (512, 512):
-                    v1_arr = np.array(
-                        Image.fromarray(v1_arr).resize((512, 512), Image.NEAREST)
-                    )
-                v1_bin = (v1_arr > 127).astype(np.float32)
+            # ── A1 fallback: V2 area >> V1+LoRA area → use V1 mask ─────────────
+            used_a1 = False
+            if a1_cfg is not None and not used_fallback:
+                ds_name  = data_item.get("dataset_name") or os.path.basename(data_item["image"]).split("_")[0]
+                filename = os.path.basename(data_item["image"])
+                v1_path  = os.path.join(a1_cfg["v1_mask_dir"], ds_name, "masks", filename)
+                if os.path.exists(v1_path):
+                    v1_arr = np.array(Image.open(v1_path).convert("L"))
+                    if v1_arr.shape != (512, 512):
+                        v1_arr = np.array(
+                            Image.fromarray(v1_arr).resize((512, 512), Image.NEAREST)
+                        )
+                    v1_bin = (v1_arr > 127).astype(np.float32)
 
-                v2_bin   = (final_prob_512 > 0.5).float()[0, 0].cpu().numpy()
-                v2_area  = float(v2_bin.sum())
-                v1_area  = float(v1_bin.sum())
-                img_size = float(v2_bin.size)
+                    v2_bin   = (final_prob_512 > 0.5).float()[0, 0].cpu().numpy()
+                    v2_area  = float(v2_bin.sum())
+                    v1_area  = float(v1_bin.sum())
+                    img_size = float(v2_bin.size)
 
-                if v1_area > a1_cfg["a1_v1_min_area"] * img_size and \
-                   v2_area > a1_cfg["a1_over_ratio"] * v1_area:
-                    final_prob_512 = torch.from_numpy(v1_bin).float()[None, None].to(self.device)
+                    if v1_area > a1_cfg["a1_v1_min_area"] * img_size and \
+                       v2_area > a1_cfg["a1_over_ratio"] * v1_area:
+                        final_prob_512 = torch.from_numpy(v1_bin).float()[None, None].to(self.device)
+                        used_a1 = True
+
+        elif fallback_mode == "swap":
+            # ── Empty fallback: empty student → SAM^LoRA binary ─────────────
+            used_fallback = False
+            used_a1       = False  # reused: records oversize→UNet1 trigger in swap mode
+
+            student_empty = ((unet2_prob > 0.5).float().sum() == 0)
+            if student_empty:
+                final_prob_512 = (sam_soft > 0.5).float()
+                used_fallback  = True
+            else:
+                final_prob_512 = unet2_prob
+
+            # ── Oversize fallback: V2 area > 1.5*SAM area & SAM>=1% → UNet1 soft ──
+            if not used_fallback and a1_cfg is not None:
+                sam_bin_np = (sam_soft > 0.5).float()[0, 0].cpu().numpy()
+                v2_bin_np  = (final_prob_512 > 0.5).float()[0, 0].cpu().numpy()
+                sam_area   = float(sam_bin_np.sum())
+                v2_area    = float(v2_bin_np.sum())
+                img_size   = float(sam_bin_np.size)
+
+                if sam_area > a1_cfg["a1_v1_min_area"] * img_size and \
+                   v2_area > a1_cfg["a1_over_ratio"] * sam_area:
+                    final_prob_512 = unet1_soft
                     used_a1 = True
+        else:
+            raise ValueError(f"Unknown fallback_mode: {fallback_mode}")
         # ──────────────────────────────────────────────────────────────────
 
         probs_orig    = F.interpolate(final_prob_512, size=(orig_h, orig_w),
@@ -250,6 +284,10 @@ def main():
                              "(default 0.01 = 1% of image, filters out tiny V1 masks).")
     parser.add_argument("--no_overlay", action="store_true",
                         help="Skip matplotlib overlay PNG saving for speed.")
+    parser.add_argument("--fallback_mode", type=str, default="legacy",
+                        choices=["legacy", "swap"],
+                        help="legacy = current logic (empty→UNet1 soft, A1→V1+LoRA mask); "
+                             "swap = experimental (empty→SAM^LoRA binary, oversize vs SAM→UNet1 soft).")
     args = parser.parse_args()
 
     OUTPUT_DIR = os.path.join(
@@ -273,7 +311,7 @@ def main():
                                       sam_lora_ckpt=lora_ckpt)
 
     a1_cfg = None
-    if args.enable_a1:
+    if args.fallback_mode == "legacy" and args.enable_a1:
         v1_dir = args.v1_mask_dir
         if not os.path.isabs(v1_dir):
             v1_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), v1_dir)
@@ -282,9 +320,18 @@ def main():
             "a1_over_ratio":  args.a1_over_ratio,
             "a1_v1_min_area": args.a1_v1_min_area,
         }
-        print(f"A1 fallback enabled. v1_mask_dir={v1_dir}, "
+        print(f"[legacy] A1 fallback enabled. v1_mask_dir={v1_dir}, "
               f"trigger if v2_area > {args.a1_over_ratio} * v1_area "
               f"AND v1_area > {args.a1_v1_min_area} * image_size")
+    elif args.fallback_mode == "swap":
+        # swap 模式下 oversize fallback 默认启用，参照源是内部 sam_soft，不读 v1_mask_dir
+        a1_cfg = {
+            "a1_over_ratio":  args.a1_over_ratio,
+            "a1_v1_min_area": args.a1_v1_min_area,
+        }
+        print(f"[swap] empty→SAM^LoRA binary; oversize→UNet1 soft "
+              f"(trigger if v2_area > {args.a1_over_ratio} * sam_area "
+              f"AND sam_area > {args.a1_v1_min_area} * image_size)")
 
     results_stats = []
     fallback_count = 0
@@ -292,7 +339,8 @@ def main():
 
     for item in tqdm(target_files, desc="Sandwich V2"):
         try:
-            res = inferencer.run_sample(item, a1_cfg=a1_cfg)
+            res = inferencer.run_sample(item, a1_cfg=a1_cfg,
+                                         fallback_mode=args.fallback_mode)
             dataset_name = item["dataset_name"]
             filename = res["filename"]
             if res["used_fallback"]:
@@ -352,9 +400,13 @@ def main():
             print(f"Error: {item['image']}: {e}")
             traceback.print_exc()
 
-    print(f"\nEmpty-student fallback used: {fallback_count} / {len(target_files)}")
-    if args.enable_a1:
-        print(f"A1 fallback used: {a1_count} / {len(target_files)}")
+    if args.fallback_mode == "legacy":
+        print(f"\n[legacy] Empty-student fallback (→UNet1 soft): {fallback_count} / {len(target_files)}")
+        if args.enable_a1:
+            print(f"[legacy] A1 fallback (→V1+LoRA mask): {a1_count} / {len(target_files)}")
+    else:  # swap
+        print(f"\n[swap] Empty-student fallback (→SAM^LoRA binary): {fallback_count} / {len(target_files)}")
+        print(f"[swap] Oversize fallback (→UNet1 soft):        {a1_count} / {len(target_files)}")
 
     if results_stats:
         df = pd.DataFrame(results_stats)
