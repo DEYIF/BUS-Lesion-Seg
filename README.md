@@ -166,7 +166,7 @@ python -m src_distill.train \
   --exp_tag sam3_gtonly
 ```
 
-权重默认保存在 `ckpt_root/<exp_tag>/student_sam3_gtonly_lora.pth`。`ckpt_root` 在 `src_distill/train.py` 中默认指向服务器路径，请先改为本地 `checkpoints/`。将 `--no_distillation` 换成 `--use_distillation` 即可训练蒸馏版；若希望对齐结果表中的 SAM 3（full-decoder fine-tuning），将 `--finetune_type` 改为 `full`，此时权重文件名为 `student_sam3_gtonly_full.pth` / `student_sam3_distilled_full.pth`。
+权重默认保存在 `ckpt_root/<exp_tag>/student_sam3_gtonly_lora.pth`。`ckpt_root` 在 `src_distill/train.py` 中默认指向服务器路径，请先改为本地 `checkpoints/`。将 `--no_distillation` 换成 `--use_distillation` 即可训练蒸馏版；若希望对齐结果表中的 SAM 3（full-decoder fine-tuning），将 `--finetune_type` 改为 `full`，此时权重文件名为 `student_sam3_gtonly_full.pth` / `student_sam3_distilled_full.pth`，后续命令中的 `_lora` 路径也需相应替换为 `_full`。
 
 ### 5. 预计算 Sandwich V2 所需概率图
 
