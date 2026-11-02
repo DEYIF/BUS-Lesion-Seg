@@ -1,5 +1,7 @@
 <div align="center">
 
+**简体中文** · [English](README_EN.md)
+
 # BUS-Lesion-Seg
 
 **乳腺超声病灶分割 · Breast Ultrasound Lesion Segmentation**
@@ -12,7 +14,7 @@
 ![Models](https://img.shields.io/badge/Models-U--Net%20%7C%20SAM%203%20%7C%20MedSAM-6A5ACD?style=flat-square)
 ![Datasets](https://img.shields.io/badge/Datasets-BUID%20%7C%20BUSC%20%7C%20BUSUC%20%7C%20UDIAT-2E8B57?style=flat-square)
 
-[项目简介](#项目简介) · [方法概览](#方法概览) · [快速开始](#快速开始) · [实验结果](#实验结果) · [模块说明](#模块说明)
+[项目简介](#项目简介) · [相关工作](#相关工作) · [方法概览](#方法概览) · [快速开始](#快速开始) · [实验结果](#实验结果) · [模块说明](#模块说明)
 
 </div>
 
@@ -38,6 +40,29 @@
 - **蒸馏与 LoRA 微调**：支持 Teacher 引导的蒸馏训练与 GT-only 对照，并提供 LoRA / full-decoder fine-tuning 两种策略。
 - **多数据集外部验证**：在 BUID、BUSC、BUSUC、UDIAT 四个来源的数据集上统一评估，报告 Dice / IoU 与 Dice > 0.7 的样本比例。
 - **完整实验工具链**：预计算、消融图、显著性检验、bad case 分析与 qualitative figure 渲染脚本一应俱全。
+
+## 相关工作
+
+**医学图像分割与 U-Net。** U-Net 通过编码器-解码器结构与跳跃连接奠定了生物医学图像分割的基础 [1]；nnU-Net 进一步将预处理、网络结构与训练策略自动化 [2]。在乳腺超声等小样本场景中，U-Net 类模型仍是强基线，但其定位能力受限于域内标注规模。
+
+**通用分割基础模型。** SAM 将可提示分割扩展到大规模数据 [3]，SAM 3 进一步引入概念提示并提升通用目标分割能力 [4]。MedSAM [5] 与 SAM-Med2D [6] 将 SAM 适配到医学图像；UltraSam [7] 则利用大规模开放超声数据构建超声专用基础模型。这些模型提供了强边界先验，但在低对比度、强噪声的超声图像上仍可能出现边界漂移与域偏移。
+
+**参数高效微调与知识蒸馏。** LoRA 通过低秩适配器降低大模型微调成本 [8]；知识蒸馏将 Teacher 的软输出迁移给 Student [9]。本项目将二者结合：Teacher U-Net 提供 box prompt 与软监督，SAM 3 的 Mask Decoder 通过 LoRA 或 full-decoder 微调适配超声域，并用 GT-only 对照分离蒸馏收益。
+
+**乳腺超声分割与本项目定位。** 乳腺超声分割已有大量 U-Net 变体与公开数据集（如 BUSI [10]）。与直接微调单一分割模型不同，本项目将冻结的 U-Net 定位、SAM 3 边界细化与轻量 Student U-Net 融合组织为三阶段 Sandwich 流程，并在 BUID、BUSC、BUSUC、UDIAT 四个外部集上统一评估，重点考察基础模型在医学小样本场景中的可迁移性与融合收益。
+
+### 参考文献
+
+1. Ronneberger O., Fischer P., Brox T. U-Net: Convolutional Networks for Biomedical Image Segmentation. MICCAI 2015. [arXiv:1505.04597](https://arxiv.org/abs/1505.04597)
+2. Isensee F., et al. nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation. Nature Methods, 2021. [arXiv:1809.10486](https://arxiv.org/abs/1809.10486) · [DOI](https://doi.org/10.1038/s41592-020-01008-z)
+3. Kirillov A., et al. Segment Anything. ICCV 2023. [arXiv:2304.02643](https://arxiv.org/abs/2304.02643)
+4. Carion N., et al. SAM 3: Segment Anything with Concepts. arXiv:2511.16719, 2025. [arXiv](https://arxiv.org/abs/2511.16719)
+5. Ma J., et al. Segment Anything in Medical Images. Nature Communications, 2024. [arXiv:2304.12306](https://arxiv.org/abs/2304.12306) · [DOI](https://doi.org/10.1038/s41467-024-44824-z)
+6. Cheng J., et al. SAM-Med2D. arXiv:2308.16184, 2023. [arXiv](https://arxiv.org/abs/2308.16184)
+7. Meyer A., et al. UltraSam: A Foundation Model for Ultrasound using Large Open-Access Segmentation Datasets. arXiv:2411.16222, 2024. [arXiv](https://arxiv.org/abs/2411.16222)
+8. Hu E. J., et al. LoRA: Low-Rank Adaptation of Large Language Models. ICLR 2022. [arXiv:2106.09685](https://arxiv.org/abs/2106.09685)
+9. Hinton G., Vinyals O., Dean J. Distilling the Knowledge in a Neural Network. arXiv:1503.02531, 2015. [arXiv](https://arxiv.org/abs/1503.02531)
+10. Al-Dhabyani W., et al. Dataset of breast ultrasound images. Data in Brief, 2020. [DOI](https://doi.org/10.1016/j.dib.2019.104863)
 
 ## 方法概览
 
