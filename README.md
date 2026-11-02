@@ -99,7 +99,7 @@ pip install segmentation-models-pytorch monai numpy pandas matplotlib pillow \
 若运行 SAM 3、MedSAM 或 LoRA 相关实验，还需按对应模型仓库补齐依赖与权重文件（如 `sam3.pt`、`medsam_vit_b.pth`）。仓库不包含任何模型权重或数据集。
 
 > [!IMPORTANT]
-> 代码中多处默认路径指向原作者服务器环境（例如 `/home/maia-user/yufeng/...`）。本地运行前，请优先检查并替换 `src_unet/config.py`、`src_distill/config.py` 中的 `DATA_ROOT`、`CHECKPOINT_DIR`、`SAM_CKPT`、`UNET_CKPT` 等字段，或在命令行显式传入对应参数。
+> 代码中多处默认路径指向原作者服务器环境（例如 `/home/maia-user/yufeng/...`）。本地运行前，请优先检查并替换 `src_unet/config.py`、`src_distill/config.py` 中的 `DATA_ROOT`、`CHECKPOINT_DIR`、`SAM_CKPT`、`UNET_CKPT` 等字段，以及 `src_distill/train.py`、`src_sandwich/*` 中硬编码的权重路径，或在命令行显式传入对应参数。
 
 ## 数据准备
 
